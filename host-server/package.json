@@ -1,0 +1,15 @@
+{
+  "name": "clive-host-server",
+  "version": "0.1.0",
+  "description": "Clive host server — STT, TTS, personality engine, agent interface",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "MOCK_STT=1 MOCK_TTS=1 MOCK_LLM=1 node src/index.js",
+    "dev:live": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "ws": "^8.18.0"
+  }
+}

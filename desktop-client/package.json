@@ -1,0 +1,16 @@
+{
+  "name": "clive-desktop",
+  "version": "0.1.0",
+  "description": "Clive Desktop — GPU-accelerated voice companion for Windows/Linux",
+  "main": "launcher.js",
+  "scripts": {
+    "start": "node launcher.js",
+    "dev": "MOCK_STT=1 MOCK_TTS=1 MOCK_LLM=1 MOCK_AGENT=1 node launcher.js",
+    "dev:gpu": "node launcher.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  }
+}

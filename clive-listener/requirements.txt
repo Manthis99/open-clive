@@ -1,0 +1,9 @@
+# Clive Listener — Wake Word + VAD + Audio Capture
+# Install: pip install -r requirements.txt
+
+sounddevice>=0.4.6
+soundfile>=0.12.0
+numpy>=1.24.0
+scipy>=1.10.0
+onnxruntime>=1.15.0
+websockets>=12.0

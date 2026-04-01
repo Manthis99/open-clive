@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Clive</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="apple-touch-icon" href="data:,">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+</head>
+<body>
+  <div id="app" class="state-idle">
+    <div id="ambient-glow"></div>
+
+    <!-- Top bar: identity + meta -->
+    <header id="topbar">
+      <div id="identity">
+        <div id="orb">
+          <div id="orb-ring"></div>
+          <div id="orb-core"></div>
+          <div id="orb-pulse"></div>
+        </div>
+        <div id="identity-text">
+          <span id="brand-label">Clive</span>
+          <span id="state-label">ready</span>
+        </div>
+      </div>
+      <div id="topbar-right">
+        <span id="clock-display">--:--</span>
+        <span id="connection-dot"></span>
+        <span id="connection-text">Connecting</span>
+        <button id="btn-status-toggle" class="icon-btn" type="button" aria-label="Toggle status panel">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main content: two columns on desktop, stacked on mobile -->
+    <main id="main">
+      <!-- Conversation column (always visible, always primary) -->
+      <section id="conversation">
+        <!-- Live interaction area -->
+        <div id="live-area">
+          <div id="hero-badge" class="status-badge">Ready</div>
+          <div id="transcript" class="hidden"></div>
+          <div id="response"></div>
+          <div id="display-card" class="hidden" aria-live="polite">
+            <div class="dc-header">
+              <div class="dc-title">On Screen</div>
+              <div class="dc-hint">Scroll to review</div>
+            </div>
+            <div id="display-card-body"></div>
+          </div>
+          <div id="task-status" class="hidden">
+            <div id="task-label"></div>
+            <div id="task-progress"></div>
+          </div>
+        </div>
+
+        <!-- Conversation history -->
+        <div id="history-section">
+          <div id="history"></div>
+        </div>
+
+        <!-- Controls: PTT + hint -->
+        <div id="controls">
+          <div id="interaction-hint">Hold to talk, or interrupt when Clive is speaking.</div>
+          <button id="btn-push-to-talk" class="ptt-btn" type="button">
+            <span class="ptt-icon"></span>
+            <span class="ptt-label">Hold to Talk</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Status sidebar (collapsible on mobile) -->
+      <aside id="sidebar" class="collapsed">
+        <div id="sidebar-scroll">
+          <!-- System status -->
+          <div class="sidebar-card">
+            <div class="card-title">System</div>
+            <div class="card-grid">
+              <div class="card-metric">
+                <span class="metric-label">Mode</span>
+                <span id="metric-mode" class="metric-value">Idle</span>
+              </div>
+              <div class="card-metric">
+                <span class="metric-label">Wake word</span>
+                <span id="metric-wake-word" class="metric-value">Push-to-talk</span>
+              </div>
+              <div class="card-metric">
+                <span class="metric-label">Audio</span>
+                <span id="metric-audio" class="metric-value">Ready</span>
+              </div>
+              <div class="card-metric">
+                <span class="metric-label">Surface</span>
+                <span id="metric-device" class="metric-value">Dashboard</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- OpenClaw -->
+          <div class="sidebar-card">
+            <div class="card-title">OpenClaw</div>
+            <div class="card-rows">
+              <div class="card-row"><span>Bridge</span><span id="host-bridge-mode">Gateway HTTP</span></div>
+              <div class="card-row"><span>Agent</span><span id="host-agent-id">clive</span></div>
+              <div class="card-row"><span>Health</span><span id="host-agent-health">Checking</span></div>
+              <div class="card-row"><span>Last heard</span><span id="host-last-transcript">Waiting</span></div>
+            </div>
+          </div>
+
+          <!-- Behavior settings preview -->
+          <div class="sidebar-card">
+            <div class="card-title">Behavior</div>
+            <div class="card-rows">
+              <div class="card-row"><span>Auto-listen</span><span id="preview-auto-listen">On</span></div>
+              <div class="card-row"><span>Barge-in</span><span id="preview-barge-in">On</span></div>
+              <div class="card-row"><span>Reply timeout</span><span id="preview-auto-timeout">5s</span></div>
+              <div class="card-row"><span>Ambient motion</span><span id="preview-ambient-motion">On</span></div>
+              <div class="card-row"><span>Text size</span><span id="preview-large-text">Standard</span></div>
+            </div>
+            <button id="btn-settings" class="settings-btn" type="button">Open Settings</button>
+          </div>
+
+          <!-- Cues -->
+          <div class="sidebar-card">
+            <div class="card-title">Notes</div>
+            <div class="card-notes">
+              <p id="note-primary">Clive is ready for voice input.</p>
+              <p id="note-secondary">Wake word works best on dedicated hardware.</p>
+              <p id="note-tertiary">Barge-in is enabled for speech interrupts.</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Settings overlay -->
+    <div id="settings-panel" class="overlay hidden" aria-hidden="true">
+      <div id="settings-backdrop" class="overlay-backdrop"></div>
+      <div class="overlay-sheet">
+        <div class="overlay-header">
+          <h2>Settings</h2>
+          <button id="btn-close-settings" class="icon-btn" type="button" aria-label="Close settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-label">Interaction</div>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Auto-listen after speaking</div>
+              <div class="setting-desc">Reopen the mic after Clive finishes a response.</div>
+            </div>
+            <input id="setting-auto-listen" type="checkbox" checked>
+          </label>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Speech barge-in</div>
+              <div class="setting-desc">Interrupt Clive by speaking over him.</div>
+            </div>
+            <input id="setting-barge-in" type="checkbox" checked>
+          </label>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Reply timeout</div>
+              <div class="setting-desc">How long to wait for you after Clive speaks.</div>
+            </div>
+            <select id="setting-auto-listen-timeout" class="setting-select">
+              <option value="3000">3s</option>
+              <option value="5000" selected>5s</option>
+              <option value="8000">8s</option>
+            </select>
+          </label>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Ambient motion</div>
+              <div class="setting-desc">Animate the orb and background glow.</div>
+            </div>
+            <input id="setting-ambient-motion" type="checkbox" checked>
+          </label>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-label">Display</div>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Compact mode</div>
+              <div class="setting-desc">Tighter spacing for smaller screens.</div>
+            </div>
+            <input id="setting-compact-mode" type="checkbox">
+          </label>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Show history</div>
+              <div class="setting-desc">Show recent conversation below the live area.</div>
+            </div>
+            <input id="setting-show-history" type="checkbox" checked>
+          </label>
+
+          <label class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Large text</div>
+              <div class="setting-desc">Bigger text for wall displays or across-room viewing.</div>
+            </div>
+            <input id="setting-large-text" type="checkbox">
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation dialog -->
+    <div id="confirmation" class="hidden">
+      <div id="confirm-message"></div>
+      <div id="confirm-buttons">
+        <button id="btn-confirm" class="confirm-btn confirm-yes" type="button">Proceed</button>
+        <button id="btn-deny" class="confirm-btn confirm-no" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="clive-ui.js?v=4"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+node_modules/
+.env
+.env.desktop
+*.ppn
+__pycache__/
+*.pyc
+.DS_Store
+
+# Audio caches
+pi-client/public/audio/*.mp3
+pi-client/public/audio/*.wav
+
+# Large binary models (download separately)
+models/
+*.onnx
+*.onnx.json
+*.pt
+*.bin
+
+# Python virtual environments
+.venv/
+venv/
+*.egg-info/
+
+# External repos (cloned separately)
+external/
+
+# Temp / runtime
+*.tmp
+/tmp/
+context-audio/
+
+# Runtime audio (generated at runtime, not source)
+clive-listener/training-data/
+
+# Binaries
+cloudflared.exe
+
+# Logs
+*.log
+tunnel.log
+
+# Claude Code local config
+.claude/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Voice seed WAV files are committed (small, essential for CSM voice identity)
+# Override the general pattern:
+!shared/voice-seed/*.wav

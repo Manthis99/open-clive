@@ -1,0 +1,24 @@
+{
+  "name": "open-clive",
+  "version": "0.2.0",
+  "description": "Open Clive — AI desk companion (Pi + Desktop)",
+  "private": true,
+  "scripts": {
+    "install:all": "cd pi-client && npm install && cd ../host-server && npm install && cd ../desktop-client && npm install",
+    "dev:host": "cd host-server && npm run dev",
+    "dev:host:live": "cd host-server && npm run dev:live",
+    "dev:pi": "cd pi-client && npm start",
+    "dev": "npm run dev:host & npm run dev:pi",
+    "start:host": "cd host-server && npm start",
+    "start:pi": "cd pi-client && npm start",
+    "dev:desktop": "cd desktop-client && MOCK_STT=1 MOCK_TTS=1 MOCK_LLM=1 MOCK_AGENT=1 node launcher.js",
+    "dev:desktop:gpu": "cd desktop-client && node launcher.js",
+    "start:desktop": "cd desktop-client && node launcher.js",
+    "setup:gpu": "python desktop-client/setup-gpu.py",
+    "listener": "cd clive-listener && python listener.py",
+    "listener:debug": "cd clive-listener && python listener.py --debug",
+    "listener:record": "cd clive-listener && python listener.py --record-templates",
+    "train:wakeword": "cd clive-listener/tools && python train_wake_word.py",
+    "setup:listener": "pip install -r clive-listener/requirements.txt"
+  }
+}

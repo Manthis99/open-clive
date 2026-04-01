@@ -1,0 +1,26 @@
+{
+  "wake_responses": [
+    "Yes?",
+    "Go ahead.",
+    "Listening."
+  ],
+  "acknowledgements": [
+    "Got it.",
+    "On it.",
+    "Alright.",
+    "One moment."
+  ],
+  "completion": [
+    "Done.",
+    "That's done.",
+    "Finished."
+  ],
+  "errors": [
+    "That didn't work. Want me to try again?",
+    "Something went wrong. Try again?"
+  ],
+  "misheard": [
+    "I didn't catch that. Try again?",
+    "Say that again?"
+  ]
+}
