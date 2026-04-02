@@ -1,0 +1,15 @@
+[Unit]
+Description=Clive Chromium kiosk
+After=graphical.target clive-ui.service
+Wants=graphical.target clive-ui.service
+
+[Service]
+Type=simple
+User=pi
+EnvironmentFile=-/etc/default/clive-pi
+ExecStart=/bin/bash -lc '"$CLIVE_PROJECT_DIR"/pi-client/deploy/start-kiosk.sh'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

@@ -4,9 +4,9 @@
  * conversation history, settings persistence, sidebar toggle.
  */
 
-const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = `${wsProtocol}//${location.host || 'localhost:3100'}`;
-const PI_LOCAL_WS_URL = `${wsProtocol}//${location.hostname || 'localhost'}:3001`;
+const CLIVE_CONFIG = window.CLIVE_CONFIG || {};
+const WS_URL = CLIVE_CONFIG.hostWsUrl || `ws://${location.hostname || 'localhost'}:3100`;
+const STATUS_URL = `${(CLIVE_CONFIG.hostHttpUrl || `http://${location.hostname || 'localhost'}:3100`).replace(/\/$/, '')}/api/status`;
 
 // ---- DOM refs ----
 
@@ -27,6 +27,7 @@ const confirmation = document.getElementById('confirmation');
 const confirmMessage = document.getElementById('confirm-message');
 const btnConfirm = document.getElementById('btn-confirm');
 const btnDeny = document.getElementById('btn-deny');
+const interactionHint = document.getElementById('interaction-hint');
 const btnPTT = document.getElementById('btn-push-to-talk');
 const btnPTTLabel = btnPTT.querySelector('.ptt-label');
 const btnStatusToggle = document.getElementById('btn-status-toggle');
@@ -64,7 +65,6 @@ const settingLargeText = document.getElementById('setting-large-text');
 // ---- State ----
 
 let ws = null;
-let piLocalWs = null;
 let currentState = 'idle';
 let mediaStream = null;
 let audioContext = null;
@@ -91,27 +91,26 @@ let currentAudioSource = null;
 let suppressAutoListenOnce = false;
 let serverAudioEnded = false;
 let deferredState = null;
-let pendingWakeWordListen = false;
 let bargeInArmed = false;
 let bargeInFrameCount = 0;
 let lastBargeInAt = 0;
 
-const BARGE_IN_THRESHOLD = 0.015;
+const BARGE_IN_THRESHOLD = 0.028;
 const BARGE_IN_MIN_FRAMES = 2;
 const BARGE_IN_COOLDOWN_MS = 1800;
 let autoListenNoSpeechTimeout = 5000;
 
 // VAD
-const VAD_ENERGY_THRESHOLD = 0.005;
-const VAD_SILENCE_TIMEOUT = 2500;
+const VAD_ENERGY_THRESHOLD = 0.015;
+const VAD_SILENCE_TIMEOUT = 1800;
 const VAD_NO_SPEECH_TIMEOUT = 5000;
 let autoListenEnabled = true;
 let vadSpeechDetected = false;
 let vadSilenceTimer = null;
 let vadNoSpeechTimer = null;
 let isAutoListening = false;
-let wakeWordRelayConnected = false;
 let lastHostStatus = null;
+let listenerConnected = false;
 
 // Settings
 const SETTINGS_KEY = 'clive_dashboard_settings_v1';
@@ -146,6 +145,7 @@ function connect() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
+    send('client_hello', { role: 'display', canReceiveAudio: true });
     connectionDot.classList.add('connected');
     connectionText.textContent = 'Connected';
     updateDashboard();
@@ -173,19 +173,6 @@ function connect() {
   };
 }
 
-function connectPiRelay() {
-  piLocalWs = new WebSocket(PI_LOCAL_WS_URL);
-  piLocalWs.onopen = () => { wakeWordRelayConnected = true; updateDashboard(); };
-  piLocalWs.onclose = () => { wakeWordRelayConnected = false; updateDashboard(); setTimeout(connectPiRelay, 2000); };
-  piLocalWs.onerror = () => {};
-  piLocalWs.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'wake_word_detected') handleWakeWordDetected();
-    } catch {}
-  };
-}
-
 // ---- Messages ----
 
 function handleMessage(msg) {
@@ -195,11 +182,6 @@ function handleMessage(msg) {
     case 'response_text': showResponse(msg.payload.text, msg.payload.streaming); break;
     case 'response_audio_end':
       serverAudioEnded = true;
-      if (pendingWakeWordListen && currentState === 'listening' && !isPlaybackActive()) {
-        pendingWakeWordListen = false;
-        startRecording(true);
-        return;
-      }
       if (!isPlaybackActive()) onAudioPlaybackDone();
       break;
     case 'response_display': showDisplayCard(msg.payload.text, msg.payload.summary); break;
@@ -285,14 +267,8 @@ function onAudioPlaybackDone() {
     setState(next);
   }
 
-  if (pendingWakeWordListen && currentState === 'listening' && !isRecording) {
-    pendingWakeWordListen = false;
-    startRecording(true);
-    return;
-  }
-
   if (suppressAutoListenOnce) { suppressAutoListenOnce = false; return; }
-  if (!autoListenEnabled || !micAvailable) return;
+  if (!autoListenEnabled || !micAvailable || !canUseBrowserMic()) return;
   if (currentState === 'error' || currentState === 'confirming') return;
 
   setTimeout(() => {
@@ -301,7 +277,7 @@ function onAudioPlaybackDone() {
 }
 
 async function startAutoListen() {
-  if (isRecording || isAutoListening) return;
+  if (isRecording || isAutoListening || !canUseBrowserMic()) return;
   isAutoListening = true;
   vadSpeechDetected = false;
 
@@ -314,12 +290,6 @@ async function startAutoListen() {
     console.error('[AutoListen] Failed:', e);
     isAutoListening = false;
   }
-}
-
-function handleWakeWordDetected() {
-  pendingWakeWordListen = true;
-  if (['speaking', 'working', 'thinking'].includes(currentState)) interruptClive();
-  send('wake_word_detected');
 }
 
 function stopAutoListen(sendAudio = true) {
@@ -498,7 +468,7 @@ async function playNextChunk() {
   const buffer = audioQueue.shift();
 
   try {
-    unlockAudioContext();
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
     const source = audioContext.createBufferSource();
     currentAudioSource = source;
@@ -518,7 +488,40 @@ async function playNextChunk() {
 
 // ---- Audio Capture ----
 
+function canUseBrowserMic() {
+  return !listenerConnected;
+}
+
+function releaseBrowserMic() {
+  if (audioProcessor) {
+    audioProcessor.disconnect();
+    audioProcessor = null;
+  }
+  if (passiveMonitorProcessor) {
+    passiveMonitorProcessor.disconnect();
+    passiveMonitorProcessor = null;
+  }
+  if (passiveMonitorSink) {
+    passiveMonitorSink.disconnect();
+    passiveMonitorSink = null;
+  }
+  if (mediaSource) {
+    mediaSource.disconnect();
+    mediaSource = null;
+  }
+  if (mediaStream) {
+    for (const track of mediaStream.getTracks()) track.stop();
+    mediaStream = null;
+  }
+  isRecording = false;
+  isStartingRecording = false;
+  pendingStopAfterStart = false;
+}
+
 async function ensureMicAccess() {
+  if (!canUseBrowserMic()) {
+    throw new Error('Dedicated listener owns the microphone');
+  }
   if (!mediaStream) {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true }
@@ -542,6 +545,11 @@ function initPassiveMonitor() {
 }
 
 async function startRecording(isAuto = false) {
+  if (!canUseBrowserMic()) {
+    micAvailable = false;
+    updateDashboard();
+    return;
+  }
   if (isRecording || isStartingRecording) return;
   isStartingRecording = true;
   pendingStopAfterStart = false;
@@ -578,6 +586,7 @@ async function startRecording(isAuto = false) {
 function processBargeIn(pcmData) {
   const now = Date.now();
   const canBargeIn =
+    canUseBrowserMic() &&
     settings.bargeIn &&
     ['speaking', 'thinking', 'working'].includes(currentState) &&
     !isRecording && !manualPTT &&
@@ -645,7 +654,14 @@ function send(type, payload = {}) {
 
 function updatePTTButton(state = currentState) {
   const interrupt = ['speaking', 'working', 'thinking'].includes(state);
-  btnPTTLabel.textContent = interrupt ? 'Interrupt' : 'Hold to Talk';
+  const fallbackDisabled = listenerConnected && !interrupt;
+  btnPTT.disabled = fallbackDisabled;
+  btnPTTLabel.textContent = interrupt ? 'Interrupt' : fallbackDisabled ? 'Listener Active' : 'Hold to Talk';
+  if (interactionHint) {
+    interactionHint.textContent = fallbackDisabled
+      ? 'Wake word capture is running in the Python listener.'
+      : 'Hold to talk, or interrupt when Clive is speaking.';
+  }
 }
 
 function isPlaybackActive() {
@@ -686,9 +702,14 @@ function getDeviceLabel() {
 }
 
 function updateDashboard() {
+  updatePTTButton();
   if (metricMode) metricMode.textContent = stateLabels[currentState] || currentState;
-  if (metricWakeWord) metricWakeWord.textContent = wakeWordRelayConnected ? 'Relay ready' : 'Push-to-talk';
-  if (metricAudio) metricAudio.textContent = micAvailable ? (isRecording ? 'Listening' : isStartingRecording ? 'Arming' : 'Ready') : 'Blocked';
+  if (metricWakeWord) metricWakeWord.textContent = listenerConnected ? 'Listener online' : 'Browser fallback';
+  if (metricAudio) {
+    metricAudio.textContent = listenerConnected
+      ? 'Listener'
+      : micAvailable ? (isRecording ? 'Listening' : isStartingRecording ? 'Arming' : 'Ready') : 'Blocked';
+  }
   if (metricDevice) metricDevice.textContent = getDeviceLabel();
 
   if (heroBadge) {
@@ -706,15 +727,17 @@ function updateDashboard() {
   }
 
   if (noteSecondary) {
-    noteSecondary.textContent = wakeWordRelayConnected
-      ? 'Wake relay connected.'
-      : 'Wake word requires dedicated hardware.';
+    noteSecondary.textContent = listenerConnected
+      ? 'Dedicated listener owns the microphone.'
+      : 'Browser microphone fallback is active.';
   }
 
   if (noteTertiary) {
-    noteTertiary.textContent = settings.bargeIn
-      ? 'Speech barge-in is enabled.'
-      : 'Barge-in is disabled in settings.';
+    noteTertiary.textContent = listenerConnected
+      ? 'Wake word and VAD are handled by the Python listener.'
+      : settings.bargeIn
+        ? 'Speech barge-in is enabled.'
+        : 'Barge-in is disabled in settings.';
   }
 
   if (lastHostStatus) {
@@ -727,9 +750,20 @@ function updateDashboard() {
 
 async function refreshHostStatus() {
   try {
-    const r = await fetch(`http://${location.hostname || 'localhost'}:3100/api/status`, { cache: 'no-store' });
+    const r = await fetch(STATUS_URL, { cache: 'no-store' });
     if (!r.ok) return;
     lastHostStatus = await r.json();
+    const nextListenerConnected = (lastHostStatus.host?.listenerClients || 0) > 0;
+    if (nextListenerConnected !== listenerConnected) {
+      listenerConnected = nextListenerConnected;
+      if (listenerConnected) {
+        stopAutoListen(false);
+        releaseBrowserMic();
+        btnPTT.classList.remove('recording');
+      } else {
+        micAvailable = true;
+      }
+    }
     updateDashboard();
   } catch {}
 }
@@ -795,60 +829,48 @@ function toggleSidebar() {
 
 // ---- Events ----
 
-// ---- Audio Context Wake ----
-function unlockAudioContext() {
-  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-  if (audioContext.state === 'suspended') {
-    audioContext.resume().catch(() => {});
-  }
-}
-
-// PTT - Spacebar (desktop)
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && !e.repeat && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-    e.preventDefault();
-    unlockAudioContext();
-    if (['speaking', 'working', 'thinking'].includes(currentState)) { interruptClive(); return; }
-    if (isAutoListening) stopAutoListen(false);
-    manualPTT = true;
-    startRecording(false);
-  }
-});
-window.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' && manualPTT) {
-    e.preventDefault();
-    manualPTT = false;
-    stopRecording();
-  }
-});
-
-// PTT — unified pointer events (mouse + touch)
-btnPTT.addEventListener('contextmenu', (e) => e.preventDefault());
-
-btnPTT.addEventListener('pointerdown', (e) => {
-  // Only accept primary button (left click) or touch
-  if (e.pointerType === 'mouse' && e.button !== 0) return;
-  
-  btnPTT.setPointerCapture(e.pointerId);
-  unlockAudioContext();
-  
+// PTT — mouse (desktop)
+btnPTT.addEventListener('mousedown', () => {
   if (['speaking', 'working', 'thinking'].includes(currentState)) { interruptClive(); return; }
+  if (!canUseBrowserMic()) return;
   if (isAutoListening) stopAutoListen(false);
   manualPTT = true;
   startRecording(false);
 });
+btnPTT.addEventListener('mouseup', () => { if (manualPTT) { manualPTT = false; stopRecording(); } });
+btnPTT.addEventListener('mouseleave', () => { if (manualPTT) { manualPTT = false; stopRecording(); } });
 
-btnPTT.addEventListener('pointerup', (e) => {
-  e.preventDefault();
-  try { btnPTT.releasePointerCapture(e.pointerId); } catch(err) {} 
-  if (manualPTT) { manualPTT = false; stopRecording(); }
-});
+// PTT — touch (mobile/tablet/Pi touchscreen)
+// Prevent context menu on long press which fires touchcancel and kills the hold
+btnPTT.addEventListener('contextmenu', (e) => e.preventDefault());
 
-btnPTT.addEventListener('pointercancel', (e) => {
+btnPTT.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  try { btnPTT.releasePointerCapture(e.pointerId); } catch(err) {} 
+  e.stopPropagation();
+  if (['speaking', 'working', 'thinking'].includes(currentState)) { interruptClive(); return; }
+  if (!canUseBrowserMic()) return;
+  if (isAutoListening) stopAutoListen(false);
+  manualPTT = true;
+  startRecording(false);
+}, { passive: false });
+
+btnPTT.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
   if (manualPTT) { manualPTT = false; stopRecording(); }
-});
+}, { passive: false });
+
+// touchcancel fires when the browser hijacks the touch (scroll, gesture, context menu)
+// Treat it as a release so we don't get stuck in recording state
+btnPTT.addEventListener('touchcancel', (e) => {
+  e.preventDefault();
+  if (manualPTT) { manualPTT = false; stopRecording(); }
+}, { passive: false });
+
+// Prevent touchmove from causing issues — keep the hold alive even if finger drifts
+btnPTT.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+}, { passive: false });
 
 // Confirm
 btnConfirm.addEventListener('click', () => { send('confirmation_response', { confirmed: true }); confirmation.classList.add('hidden'); });
@@ -879,9 +901,8 @@ updatePTTButton('idle');
 updateClock();
 setInterval(updateClock, 30000);
 refreshHostStatus();
-setInterval(refreshHostStatus, 5000);
+setInterval(refreshHostStatus, 1500);
 connect();
-connectPiRelay();
 
 // Default sidebar: open on desktop, closed on mobile
 if (window.innerWidth > 960) sidebar.classList.remove('collapsed');

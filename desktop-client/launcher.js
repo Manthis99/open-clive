@@ -22,7 +22,7 @@ const { MessageType, CliveState, createMessage, parseMessage } = require('../sha
 const { transcribe, initPersistentSTT, shutdownSTT } = require('../host-server/src/stt/whisper');
 const { speak, speakCached, initTTS, shutdownTTS } = require('../host-server/src/tts/elevenlabs');
 const { getResponse } = require('../host-server/src/personality/engine');
-const { executeTurn, getAgentRuntimeStatus } = require('../host-server/src/agent/openclaw');
+const { executeTurn, getAgentRuntimeStatus, initGateway, shutdownGateway, onGatewayEvent } = require('../host-server/src/agent/openclaw');
 
 const PORT = process.env.HOST_PORT || 3100;
 const FALLBACK_TO_LOCAL_LLM = process.env.CLIVE_FALLBACK_TO_LOCAL_LLM !== '0';
@@ -448,6 +448,22 @@ async function start() {
     }
   }
 
+  // Connect to OpenClaw Gateway WebSocket
+  initGateway();
+
+  // Listen for proactive events from OpenClaw (heartbeat nudges, etc.)
+  onGatewayEvent((event) => {
+    const text = event?.data?.text || event?.data?.content;
+    if (text) {
+      console.log(`[Desktop] Proactive event from OpenClaw: "${text.substring(0, 80)}"`);
+      for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(createMessage(MessageType.RESPONSE_TEXT, { text, proactive: true }));
+        }
+      }
+    }
+  });
+
   server.listen(PORT, () => {
     console.log(`[Desktop] Clive running at http://localhost:${PORT}`);
     console.log('[Desktop] Open that URL in your browser');
@@ -461,6 +477,7 @@ async function start() {
 process.on('SIGINT', async () => {
   console.log('\n[Desktop] Shutting down...');
   stopTunnel();
+  shutdownGateway();
   try {
     await shutdownSTT();
     await shutdownTTS();
@@ -470,6 +487,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   stopTunnel();
+  shutdownGateway();
   try {
     await shutdownSTT();
     await shutdownTTS();

@@ -11,7 +11,7 @@ Project path on the Mac:
 
 Key architecture:
 
-- Raspberry Pi runs the local display and wake-word layer
+- Raspberry Pi runs the local display and wake-word listener layer
 - MacBook runs the Clive host server and OpenClaw
 - Pi UI should be served locally on the Pi at `http://localhost:3000`
 - Pi browser should run in Chromium kiosk mode
@@ -24,7 +24,7 @@ Your job:
 3. Install and configure the dependencies needed for:
    - local Node runtime
    - Chromium kiosk mode
-   - optional Porcupine wake word support
+   - the Python `clive-listener` sidecar
 4. Set up `systemd` services so Clive auto-starts on boot.
 5. Make the setup robust across reboot/network hiccups.
 6. Document exactly what you changed and how to operate/recover it.
@@ -32,6 +32,7 @@ Your job:
 Important implementation preferences:
 
 - The Pi should serve the UI locally and load it via Chromium kiosk at `localhost:3000`
+- The Python listener should own the microphone in production
 - The Pi should not depend on a manually opened browser tab
 - The Pi should reconnect automatically to the host if the host is unavailable
 - The Pi should remain usable even if the host is temporarily offline
@@ -44,12 +45,13 @@ Please do the following:
 2. Add or refine any Pi-specific scripts/config needed for deployment.
 3. Create `systemd` units for:
    - the Pi local app service
+   - the wake-word listener service
    - kiosk browser startup
 4. Add any helper scripts needed for:
    - waiting for network
    - restarting Chromium cleanly
    - setting environment variables for host connection
-5. If Porcupine wake word support needs extra install steps on Pi, document them clearly.
+5. If wake-word model/template install steps are needed on Pi, document them clearly.
 6. Produce a short operator guide covering:
    - install steps on a fresh Pi
    - how to change the host IP/hostname

@@ -1,36 +1,52 @@
-# OpenClaw-Centric Clive Migration
-
-This project is now moving toward an OpenClaw-centric architecture.
+# OpenClaw-Centric Clive Architecture
 
 ## Principle
 
 Clive's desk UI is the body.
 OpenClaw is the mind.
 
-That means:
+## How it connects
 
-- OpenClaw handles conversational turns and action turns.
-- OpenClaw owns long-term memory, personality, and heartbeat behavior.
-- The Clive host server remains responsible for STT, TTS, and device/UI state.
+Clive connects to the OpenClaw Gateway over a **persistent bidirectional WebSocket** — the same protocol that Discord, iMessage, and other channel connectors use. This replaces the earlier CLI-based approach (which spawned a new process per turn) and the intermediate HTTP approach.
 
-## What changed in this repo
+The connection flow:
 
-- The host server now routes every spoken transcript to OpenClaw first.
-- The old local personality engine remains only as a fallback if OpenClaw is unavailable.
-- A source-controlled OpenClaw workspace template now lives in `openclaw-clive-workspace/`.
+1. **Handshake** — Clive connects to `ws://127.0.0.1:18789` as an `operator` with auth token
+2. **Chat turns** — User speech is transcribed, sent as an RPC `chat.completions` request, response comes back as a frame
+3. **Proactive events** — OpenClaw can push events TO Clive (heartbeat nudges, reminders, proactive messages)
+4. **Reconnection** — If the connection drops, exponential backoff reconnect kicks in automatically
 
-## Recommended next live step
+## What each side owns
 
-Create or repoint a dedicated OpenClaw agent for Clive and back it with a dedicated workspace, for example:
+| Clive (body) | OpenClaw (mind) |
+|---|---|
+| STT (transcription) | Conversational turns |
+| TTS (speech synthesis) | Long-term memory |
+| UI state + display | Personality + judgment |
+| Audio pipeline | Tool execution (Notion, etc.) |
+| Device management | Heartbeat behavior |
 
-- agent id: `clive`
-- workspace: `~/.openclaw/workspace-clive`
+## Configuration
 
-Then copy the files from `openclaw-clive-workspace/` into that workspace and point the host server at:
+```env
+OPENCLAW_AGENT=clive
+OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
+OPENCLAW_GATEWAY_TOKEN=your-token-here
+OPENCLAW_SESSION_USER=clive-voice
+```
 
-- `OPENCLAW_AGENT=clive`
+The URL is automatically converted to `ws://` for the WebSocket connection.
 
-## Why this direction
+## Workspace
 
-This avoids maintaining two competing personalities and two memory systems.
-It also makes heartbeat, memory growth, and continuity native instead of bolted on.
+Source-controlled workspace templates live in `openclaw-clive-workspace/`. Copy these into your OpenClaw agent's workspace (e.g. `~/.openclaw/workspace-clive`):
+
+- `SOUL.md` — personality and values
+- `IDENTITY.md` — character shape and vibe
+- `MEMORY.md` — long-term curated memory
+- `USER.md` — human context
+- `HEARTBEAT.md` — proactive behavior
+
+## Fallback
+
+If OpenClaw is unavailable and `CLIVE_FALLBACK_TO_LOCAL_LLM=1`, Clive falls back to the local Anthropic Claude API for basic responses.

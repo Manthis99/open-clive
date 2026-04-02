@@ -6,6 +6,7 @@
 // Message types
 const MessageType = {
   // Pi/Desktop -> Host
+  CLIENT_HELLO: 'client_hello',
   WAKE_WORD_DETECTED: 'wake_word_detected',
   AUDIO_CHUNK: 'audio_chunk',
   AUDIO_END: 'audio_end',

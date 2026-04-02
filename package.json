@@ -5,9 +5,11 @@
   "private": true,
   "scripts": {
     "install:all": "cd pi-client && npm install && cd ../host-server && npm install && cd ../desktop-client && npm install",
+    "install:listener": "python3 -m pip install -r clive-listener/requirements.txt",
     "dev:host": "cd host-server && npm run dev",
     "dev:host:live": "cd host-server && npm run dev:live",
     "dev:pi": "cd pi-client && npm start",
+    "dev:listener": "python3 clive-listener/listener.py --host ws://localhost:3100 --debug",
     "dev": "npm run dev:host & npm run dev:pi",
     "start:host": "cd host-server && npm start",
     "start:pi": "cd pi-client && npm start",

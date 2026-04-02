@@ -16,15 +16,23 @@ const { MessageType, CliveState, createMessage, parseMessage } = require('../../
 const { transcribe } = require('./stt/whisper');
 const { speak, speakCached, initTTS, shutdownTTS } = require('./tts/elevenlabs');
 const { getResponse } = require('./personality/engine');
-const { executeTurn, getAgentRuntimeStatus } = require('./agent/openclaw');
+const { executeTurn, getAgentRuntimeStatus, initGateway, shutdownGateway, onGatewayEvent } = require('./agent/openclaw');
 const { addTurn, getRecentTurns, SPEAKER_CLIVE, SPEAKER_USER } = require('./context/conversation-buffer');
 const { shapeResponse } = require('./context/response-shaper');
 
 const PORT = process.env.HOST_PORT || 3100;
 const FALLBACK_TO_LOCAL_LLM = process.env.CLIVE_FALLBACK_TO_LOCAL_LLM !== '0';
+const CLIENT_ROLE = {
+  LEGACY: 'legacy',
+  DISPLAY: 'display',
+  LISTENER: 'listener',
+};
 const hostRuntimeStatus = {
   activeState: CliveState.IDLE,
   connectedClients: 0,
+  displayClients: 0,
+  listenerClients: 0,
+  legacyClients: 0,
   lastWakeWordAt: null,
   lastTranscript: '',
   lastResponse: '',
@@ -46,7 +54,7 @@ const server = http.createServer((req, res) => {
       agent: getAgentRuntimeStatus(),
       config: {
         fallbackToLocalLlm: FALLBACK_TO_LOCAL_LLM,
-        wakeWordConfigured: !!process.env.PICOVOICE_ACCESS_KEY || !!process.env.PORCUPINE_KEYWORD_PATH,
+        listenerRecommended: true,
       },
       timestamp: Date.now(),
     }));
@@ -61,6 +69,7 @@ const wss = new WebSocketServer({ server });
 
 // Track connected clients
 const clients = new Set();
+const clientMeta = new Map();
 
 // Audio buffer per client session
 const audioBuffers = new Map();
@@ -69,7 +78,10 @@ const turnState = new Map();
 wss.on('connection', (ws) => {
   console.log('[Host] Client connected');
   clients.add(ws);
-  hostRuntimeStatus.connectedClients = clients.size;
+  setClientMeta(ws, {
+    role: CLIENT_ROLE.LEGACY,
+    canReceiveAudio: true,
+  });
   audioBuffers.set(ws, []);
   turnState.set(ws, { turnId: 0, cancelledTurnId: null });
 
@@ -93,7 +105,8 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('[Host] Client disconnected');
     clients.delete(ws);
-    hostRuntimeStatus.connectedClients = clients.size;
+    clientMeta.delete(ws);
+    refreshConnectionStats();
     audioBuffers.delete(ws);
     turnState.delete(ws);
   });
@@ -107,6 +120,10 @@ wss.on('connection', (ws) => {
 
 async function handleClientMessage(ws, msg) {
   switch (msg.type) {
+    case MessageType.CLIENT_HELLO:
+      registerClient(ws, msg.payload);
+      break;
+
     case MessageType.WAKE_WORD_DETECTED:
       await handleWakeWord(ws);
       break;
@@ -132,18 +149,93 @@ async function handleClientMessage(ws, msg) {
   }
 }
 
+function registerClient(ws, payload = {}) {
+  const role = payload.role === CLIENT_ROLE.LISTENER
+    ? CLIENT_ROLE.LISTENER
+    : payload.role === CLIENT_ROLE.DISPLAY
+      ? CLIENT_ROLE.DISPLAY
+      : CLIENT_ROLE.LEGACY;
+
+  setClientMeta(ws, {
+    role,
+    canReceiveAudio: payload.canReceiveAudio !== false && role !== CLIENT_ROLE.LISTENER,
+  });
+
+  console.log(`[Host] Registered client as ${role}`);
+}
+
+function setClientMeta(ws, nextMeta) {
+  clientMeta.set(ws, nextMeta);
+  refreshConnectionStats();
+}
+
+function refreshConnectionStats() {
+  hostRuntimeStatus.connectedClients = clients.size;
+  hostRuntimeStatus.displayClients = 0;
+  hostRuntimeStatus.listenerClients = 0;
+  hostRuntimeStatus.legacyClients = 0;
+
+  for (const meta of clientMeta.values()) {
+    if (meta.role === CLIENT_ROLE.DISPLAY) hostRuntimeStatus.displayClients++;
+    else if (meta.role === CLIENT_ROLE.LISTENER) hostRuntimeStatus.listenerClients++;
+    else hostRuntimeStatus.legacyClients++;
+  }
+}
+
+function broadcastJson(message) {
+  const payload = typeof message === 'string' ? message : JSON.stringify(message);
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
+function broadcastAudio(buffer) {
+  const audioTargets = [...clients].filter((client) => {
+    if (client.readyState !== WebSocket.OPEN) return false;
+    return clientMeta.get(client)?.canReceiveAudio;
+  });
+
+  for (const client of audioTargets) {
+    client.send(buffer);
+  }
+}
+
+function createClientTransport() {
+  return {
+    readyState: WebSocket.OPEN,
+    send(data) {
+      if (Buffer.isBuffer(data)) {
+        broadcastAudio(data);
+        return;
+      }
+      if (data instanceof ArrayBuffer) {
+        broadcastAudio(Buffer.from(data));
+        return;
+      }
+      if (ArrayBuffer.isView(data)) {
+        broadcastAudio(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+        return;
+      }
+      broadcastJson(data);
+    },
+  };
+}
+
 // ---- Wake Word Flow ----
 
 async function handleWakeWord(ws) {
   console.log('[Host] Wake word detected');
   hostRuntimeStatus.lastWakeWordAt = Date.now();
+  const transport = createClientTransport();
 
   // Immediately acknowledge with state change
-  sendState(ws, CliveState.LISTENING);
+  sendState(transport, CliveState.LISTENING);
 
   // Play a short wake response
   const wakePhrase = pickRandom(['Yes?', 'Go ahead.', 'Listening.']);
-  await speakCached(ws, wakePhrase);
+  await speakCached(transport, wakePhrase);
 
   // Now waiting for audio input (PTT or continuous)
   // Audio will arrive as binary chunks
@@ -155,21 +247,22 @@ async function handleWakeWord(ws) {
 function handlePTTStart(ws) {
   console.log('[Host] PTT start');
   beginTurn(ws);
-  sendState(ws, CliveState.LISTENING);
+  sendState(createClientTransport(), CliveState.LISTENING);
   audioBuffers.set(ws, []);
 }
 
 async function handlePTTEnd(ws) {
   console.log('[Host] PTT end — processing audio');
   const activeTurnId = getActiveTurnId(ws);
-  sendState(ws, CliveState.THINKING);
+  const transport = createClientTransport();
+  sendState(transport, CliveState.THINKING);
 
   const chunks = audioBuffers.get(ws) || [];
   audioBuffers.set(ws, []);
 
   if (chunks.length === 0) {
     console.log('[Host] No audio received');
-    sendState(ws, CliveState.IDLE);
+    sendState(transport, CliveState.IDLE);
     return;
   }
 
@@ -187,25 +280,25 @@ async function handlePTTEnd(ws) {
 
     if (isTurnCancelled(ws, activeTurnId)) {
       console.log(`[Host] Turn ${activeTurnId} cancelled during transcription`);
-      sendState(ws, CliveState.IDLE);
+      sendState(transport, CliveState.IDLE);
       return;
     }
 
     if (!transcript || transcript.trim().length === 0) {
-      ws.send(createMessage(MessageType.RESPONSE_TEXT, { text: "I didn't catch that. Try again?" }));
-      await speakCached(ws, "I didn't catch that. Try again?");
-      sendState(ws, CliveState.IDLE);
+      transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: "I didn't catch that. Try again?" }));
+      await speakCached(transport, "I didn't catch that. Try again?");
+      sendState(transport, CliveState.IDLE);
       return;
     }
 
     // Send transcript to UI
-    ws.send(createMessage(MessageType.TRANSCRIPT, { text: transcript }));
+    transport.send(createMessage(MessageType.TRANSCRIPT, { text: transcript }));
 
     console.log('[Host] Routing spoken turn to OpenClaw...');
-    const result = await executeTurn(ws, transcript);
+    const result = await executeTurn(transport, transcript);
     if (isTurnCancelled(ws, activeTurnId)) {
       console.log(`[Host] Turn ${activeTurnId} cancelled before response delivery`);
-      sendState(ws, CliveState.IDLE);
+      sendState(transport, CliveState.IDLE);
       return;
     }
 
@@ -235,29 +328,29 @@ async function handlePTTEnd(ws) {
 
     if (isLong) {
       // Send brief spoken version + full display version
-      ws.send(createMessage(MessageType.RESPONSE_TEXT, { text: spokenText }));
-      ws.send(createMessage('response_display', { text: displayText, summary: spokenText }));
-      sendState(ws, CliveState.SPEAKING);
-      await speak(ws, spokenText, contextSegments);
+      transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: spokenText }));
+      transport.send(createMessage('response_display', { text: displayText, summary: spokenText }));
+      sendState(transport, CliveState.SPEAKING);
+      await speak(transport, spokenText, contextSegments);
       // Save Clive's spoken response to context buffer
       addTurn(SPEAKER_CLIVE, spokenText, null, { brevity: responseMetadata.brevity });
     } else {
-      ws.send(createMessage(MessageType.RESPONSE_TEXT, { text: responseText }));
-      sendState(ws, CliveState.SPEAKING);
-      await speak(ws, responseText, contextSegments);
+      transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: responseText }));
+      sendState(transport, CliveState.SPEAKING);
+      await speak(transport, responseText, contextSegments);
       // Save Clive's response to context buffer
       addTurn(SPEAKER_CLIVE, responseText, null, { brevity: responseMetadata.brevity });
     }
 
     // Return to idle
-    sendState(ws, CliveState.IDLE);
+    sendState(transport, CliveState.IDLE);
   } catch (e) {
     console.error('[Host] Pipeline error:', e);
-    ws.send(createMessage(MessageType.ERROR, { error: 'Something went wrong. Try again?' }));
-    sendState(ws, CliveState.ERROR);
+    transport.send(createMessage(MessageType.ERROR, { error: 'Something went wrong. Try again?' }));
+    sendState(transport, CliveState.ERROR);
 
     // Return to idle after error
-    setTimeout(() => sendState(ws, CliveState.IDLE), 3000);
+    setTimeout(() => sendState(transport, CliveState.IDLE), 3000);
   }
 }
 
@@ -266,22 +359,22 @@ async function handlePTTEnd(ws) {
 function handleConfirmation(ws, payload) {
   console.log(`[Host] Confirmation: ${payload.confirmed}`);
   // Phase 2: forward to OpenClaw agent
-  sendState(ws, CliveState.IDLE);
+  sendState(createClientTransport(), CliveState.IDLE);
 }
 
 function handleCancel(ws) {
   console.log('[Host] Cancelled');
   cancelActiveTurn(ws);
   audioBuffers.set(ws, []); // Clear any buffered audio
-  sendState(ws, CliveState.IDLE);
+  sendState(createClientTransport(), CliveState.IDLE);
 }
 
 // ---- Helpers ----
 
-function sendState(ws, state) {
+function sendState(transport, state) {
   hostRuntimeStatus.activeState = state;
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(createMessage(MessageType.STATE_CHANGE, { state }));
+  if (transport.readyState === WebSocket.OPEN) {
+    transport.send(createMessage(MessageType.STATE_CHANGE, { state }));
   }
 }
 
@@ -368,7 +461,31 @@ function detectCategory(text) {
 
 // ---- Start ----
 
+// Connect to OpenClaw Gateway WebSocket
+initGateway();
+
+// Listen for proactive events from OpenClaw (heartbeat nudges, etc.)
+onGatewayEvent((event) => {
+  const text = event?.data?.text || event?.data?.content;
+  if (text) {
+    console.log(`[Host] Proactive event from OpenClaw: "${text.substring(0, 80)}"`);
+    broadcastJson(createMessage(MessageType.RESPONSE_TEXT, { text, proactive: true }));
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`[Host] Clive host server running on port ${PORT}`);
   console.log('[Host] Waiting for Pi client connection...');
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n[Host] Shutting down...');
+  shutdownGateway();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  shutdownGateway();
+  process.exit(0);
 });

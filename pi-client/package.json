@@ -1,18 +1,13 @@
 {
   "name": "clive-pi-client",
   "version": "0.1.0",
-  "description": "Clive Pi client — touchscreen UI, wake word, audio pipeline",
+  "description": "Clive Pi client — touchscreen UI and browser fallback controls",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "ws": "^8.18.0"
-  },
-  "optionalDependencies": {
-    "@picovoice/porcupine-node": "^3.0.0",
-    "@picovoice/pvrecorder-node": "^2.0.0"
+    "express": "^4.21.0"
   }
 }

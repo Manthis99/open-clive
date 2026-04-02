@@ -1,51 +1,27 @@
 """
 vad.py — Voice Activity Detection for Clive.
-
-Detects when the user starts and stops speaking after wake word.
-Two engines:
-  1. RMS energy-based (default, no dependencies)
-  2. Sherpa-ONNX Silero VAD (more accurate, requires sherpa-onnx)
-
-Records audio chunks during speech and returns the complete utterance
-when silence is detected.
 """
 
 import time
+
 import numpy as np
 
 
 class RmsVAD:
-    """Simple energy-based Voice Activity Detection.
-
-    Tracks RMS energy of audio chunks. Speech is detected when energy
-    exceeds a dynamic threshold. End-of-speech when silence persists
-    for silence_duration seconds.
-    """
-
     def __init__(self, sample_rate=16000, silence_duration=1.5,
                  silence_margin=3.0, pre_speech_timeout=5.0):
-        """
-        Args:
-            sample_rate: Audio sample rate (Hz)
-            silence_duration: Seconds of silence to mark end-of-speech
-            silence_margin: Multiplier over noise floor for speech threshold
-            pre_speech_timeout: Max seconds to wait for speech to start
-        """
         self.sample_rate = sample_rate
         self.silence_duration = silence_duration
         self.silence_margin = silence_margin
         self.pre_speech_timeout = pre_speech_timeout
-
-        # State
         self._noise_floor = 0.005
         self._noise_alpha = 0.05
         self._speech_started = False
         self._silence_start = None
         self._recording_start = None
-        self._max_recording = 30.0  # seconds
+        self._max_recording = 30.0
 
     def reset(self):
-        """Reset VAD state for a new utterance."""
         self._speech_started = False
         self._silence_start = None
         self._recording_start = time.time()
@@ -55,19 +31,11 @@ class RmsVAD:
         return self._noise_floor * self.silence_margin
 
     def process(self, audio_chunk):
-        """Process an audio chunk. Returns one of:
-          'speech'   — speech detected, keep recording
-          'silence'  — silence detected after speech, stop recording
-          'waiting'  — waiting for speech to start
-          'timeout'  — pre-speech timeout, no speech detected
-          'max_time' — recording too long, force stop
-        """
         rms = np.sqrt(np.mean(audio_chunk.astype(np.float32) ** 2))
         now = time.time()
 
-        # Check max recording time
         if self._recording_start and now - self._recording_start > self._max_recording:
-            return 'max_time'
+            return "max_time"
 
         is_speech = rms > self.speech_threshold
 
@@ -75,36 +43,28 @@ class RmsVAD:
             if is_speech:
                 self._speech_started = True
                 self._silence_start = None
-                return 'speech'
-            else:
-                # Update noise floor from quiet audio
-                self._noise_floor = (
-                    (1 - self._noise_alpha) * self._noise_floor +
-                    self._noise_alpha * rms
-                )
-                # Check pre-speech timeout
-                if self._recording_start and now - self._recording_start > self.pre_speech_timeout:
-                    return 'timeout'
-                return 'waiting'
-        else:
-            if is_speech:
-                self._silence_start = None
-                return 'speech'
-            else:
-                if self._silence_start is None:
-                    self._silence_start = now
-                if now - self._silence_start >= self.silence_duration:
-                    return 'silence'
-                return 'speech'  # Still within silence tolerance
+                return "speech"
+
+            self._noise_floor = (
+                (1 - self._noise_alpha) * self._noise_floor +
+                self._noise_alpha * rms
+            )
+            if self._recording_start and now - self._recording_start > self.pre_speech_timeout:
+                return "timeout"
+            return "waiting"
+
+        if is_speech:
+            self._silence_start = None
+            return "speech"
+
+        if self._silence_start is None:
+            self._silence_start = now
+        if now - self._silence_start >= self.silence_duration:
+            return "silence"
+        return "speech"
 
 
 class SherpaVAD:
-    """Sherpa-ONNX Silero VAD — more accurate, ONNX-based.
-
-    Requires: pip install sherpa-onnx
-    Model auto-downloads on first use.
-    """
-
     def __init__(self, sample_rate=16000, silence_duration=1.5,
                  pre_speech_timeout=5.0):
         self.sample_rate = sample_rate
@@ -117,11 +77,10 @@ class SherpaVAD:
         self._max_recording = 30.0
 
     def load(self):
-        """Initialize Sherpa-ONNX VAD. Returns True on success."""
         try:
             import sherpa_onnx
             config = sherpa_onnx.VadModelConfig()
-            config.silero_vad.model = ""  # Uses built-in model
+            config.silero_vad.model = ""
             config.silero_vad.threshold = 0.3
             config.silero_vad.min_speech_duration = 0.1
             config.silero_vad.min_silence_duration = self.silence_duration
@@ -133,12 +92,11 @@ class SherpaVAD:
         except ImportError:
             print("[VAD] sherpa-onnx not installed, falling back to RMS VAD")
             return False
-        except Exception as e:
-            print(f"[VAD] Sherpa-ONNX init failed: {e}")
+        except Exception as exc:
+            print(f"[VAD] Sherpa-ONNX init failed: {exc}")
             return False
 
     def reset(self):
-        """Reset for a new utterance."""
         self._speech_started = False
         self._silence_start = None
         self._recording_start = time.time()
@@ -146,50 +104,40 @@ class SherpaVAD:
             self._vad.reset()
 
     def process(self, audio_chunk):
-        """Process audio chunk. Returns same states as RmsVAD."""
         if not self._vad:
-            return 'waiting'
+            return "waiting"
 
         now = time.time()
         if self._recording_start and now - self._recording_start > self._max_recording:
-            return 'max_time'
+            return "max_time"
 
-        # Sherpa expects float32
-        audio = audio_chunk.astype(np.float32).ravel()
-        self._vad.accept_waveform(audio)
-
+        self._vad.accept_waveform(audio_chunk.astype(np.float32).ravel())
         is_speech = self._vad.is_speech_detected()
 
         if not self._speech_started:
             if is_speech:
                 self._speech_started = True
                 self._silence_start = None
-                return 'speech'
+                return "speech"
             if self._recording_start and now - self._recording_start > self.pre_speech_timeout:
-                return 'timeout'
-            return 'waiting'
-        else:
-            if is_speech:
-                self._silence_start = None
-                return 'speech'
-            else:
-                if self._silence_start is None:
-                    self._silence_start = now
-                if now - self._silence_start >= self.silence_duration:
-                    return 'silence'
-                return 'speech'
+                return "timeout"
+            return "waiting"
+
+        if is_speech:
+            self._silence_start = None
+            return "speech"
+
+        if self._silence_start is None:
+            self._silence_start = now
+        if now - self._silence_start >= self.silence_duration:
+            return "silence"
+        return "speech"
 
 
 def create_vad(method="rms", **kwargs):
-    """Factory function. Returns a VAD instance.
-
-    Args:
-        method: "rms" or "sherpa"
-    """
     if method == "sherpa":
         vad = SherpaVAD(**kwargs)
         if vad.load():
             return vad
         print("[VAD] Falling back to RMS VAD")
-
     return RmsVAD(**kwargs)

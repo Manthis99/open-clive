@@ -1,0 +1,15 @@
+[Unit]
+Description=Clive wake word listener
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+EnvironmentFile=-/etc/default/clive-pi
+ExecStart=/bin/bash -lc 'cd "$CLIVE_PROJECT_DIR/clive-listener" && exec python3 listener.py'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
