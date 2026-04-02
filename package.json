@@ -6,6 +6,7 @@
   "scripts": {
     "install:all": "cd pi-client && npm install && cd ../host-server && npm install && cd ../desktop-client && npm install",
     "install:listener": "python3 -m pip install -r clive-listener/requirements.txt",
+    "start:server": "node scripts/start-server.js",
     "dev:host": "cd host-server && npm run dev",
     "dev:host:live": "cd host-server && npm run dev:live",
     "dev:pi": "cd pi-client && npm start",

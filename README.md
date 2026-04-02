@@ -86,6 +86,23 @@ cp .env.example .env   # Edit with your API keys
 npm start
 ```
 
+### Server Mode
+
+Use this when one machine should act as Clive's always-on shared brain for Pi devices and remote web clients.
+
+```bash
+git clone https://github.com/Manthis99/open-clive.git
+cd open-clive
+cp .env.example .env   # Edit API keys, OpenClaw token, and optional tunnel settings
+npm run install:all
+npm run start:server
+```
+
+This starts:
+- the host pipeline on `http://localhost:3100`
+- the shared browser UI / web portal on `http://localhost:3000`
+- an optional Cloudflare tunnel if `CLOUDFLARE_TUNNEL=1`
+
 ### Mock Mode (no GPU, no API keys)
 
 ```bash
@@ -143,12 +160,14 @@ Key variables:
 | `CSM_ENABLED` | Enable CSM local TTS (`1` or `0`) |
 | `CSM_VOICE_SEED` | Path to reference audio for voice identity |
 | `WHISPER_DEVICE` | `cuda` or `cpu` |
+| `PI_UI_PORT` | Browser UI / web portal port |
 | `CLOUDFLARE_TUNNEL` | Auto-start Cloudflare tunnel (`1` or `0`) |
 
 ## Development
 
 ```bash
 npm run dev              # Pi client + host server (mock mode)
+npm run start:server     # Shared host + browser UI + optional tunnel
 npm run dev:desktop      # Desktop, mock mode
 npm run dev:desktop:gpu  # Desktop, full GPU pipeline
 npm run listener:debug   # Wake word listener with debug output
