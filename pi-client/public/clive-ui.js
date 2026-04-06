@@ -61,6 +61,7 @@ const settingAmbientMotion = document.getElementById('setting-ambient-motion');
 const settingCompactMode = document.getElementById('setting-compact-mode');
 const settingShowHistory = document.getElementById('setting-show-history');
 const settingLargeText = document.getElementById('setting-large-text');
+const btnExitKiosk = document.getElementById('btn-exit-kiosk');
 
 // ---- State ----
 
@@ -109,6 +110,7 @@ let vadSpeechDetected = false;
 let vadSilenceTimer = null;
 let vadNoSpeechTimer = null;
 let isAutoListening = false;
+let autoListenStartupTimer = null;
 let lastHostStatus = null;
 let listenerConnected = false;
 
@@ -271,8 +273,9 @@ function onAudioPlaybackDone() {
   if (!autoListenEnabled || !micAvailable || !canUseBrowserMic()) return;
   if (currentState === 'error' || currentState === 'confirming') return;
 
-  setTimeout(() => {
-    if (currentState === 'speaking' || currentState === 'idle') startAutoListen();
+  if (autoListenStartupTimer) { clearTimeout(autoListenStartupTimer); autoListenStartupTimer = null; }
+  autoListenStartupTimer = setTimeout(() => {
+    if (!suppressAutoListenOnce && (currentState === 'speaking' || currentState === 'idle')) startAutoListen();
   }, 400);
 }
 
@@ -419,6 +422,14 @@ function formatDisplayContent(text) {
       continue;
     }
 
+    // Images: ![alt](url)
+    const imgMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
+    if (imgMatch) {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += `<img src="${imgMatch[2]}" alt="${esc(imgMatch[1])}" class="dc-image" loading="lazy" />`;
+      continue;
+    }
+
     // Bold headers: **Section Name**
     if (/^\*\*(.+?)\*\*/.test(trimmed)) {
       if (inList) { html += '</ul>'; inList = false; }
@@ -489,7 +500,7 @@ async function playNextChunk() {
 // ---- Audio Capture ----
 
 function canUseBrowserMic() {
-  return !listenerConnected;
+  return true; // Always allow browser mic for manual PTT.
 }
 
 function releaseBrowserMic() {
@@ -519,9 +530,6 @@ function releaseBrowserMic() {
 }
 
 async function ensureMicAccess() {
-  if (!canUseBrowserMic()) {
-    throw new Error('Dedicated listener owns the microphone');
-  }
   if (!mediaStream) {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true }
@@ -654,12 +662,11 @@ function send(type, payload = {}) {
 
 function updatePTTButton(state = currentState) {
   const interrupt = ['speaking', 'working', 'thinking'].includes(state);
-  const fallbackDisabled = listenerConnected && !interrupt;
-  btnPTT.disabled = fallbackDisabled;
-  btnPTTLabel.textContent = interrupt ? 'Interrupt' : fallbackDisabled ? 'Listener Active' : 'Hold to Talk';
+  btnPTT.disabled = false;
+  btnPTTLabel.textContent = interrupt ? 'Interrupt' : 'Hold to Talk';
   if (interactionHint) {
-    interactionHint.textContent = fallbackDisabled
-      ? 'Wake word capture is running in the Python listener.'
+    interactionHint.textContent = listenerConnected
+      ? 'Auto-listen is off because the Python listener is active. Hold to talk manually.'
       : 'Hold to talk, or interrupt when Clive is speaking.';
   }
 }
@@ -681,6 +688,7 @@ function stopPlayback() {
 }
 
 function interruptClive() {
+  if (autoListenStartupTimer) { clearTimeout(autoListenStartupTimer); autoListenStartupTimer = null; }
   stopPlayback();
   stopAutoListen(false);
   if (isRecording) cancelRecording();
@@ -758,7 +766,6 @@ async function refreshHostStatus() {
       listenerConnected = nextListenerConnected;
       if (listenerConnected) {
         stopAutoListen(false);
-        releaseBrowserMic();
         btnPTT.classList.remove('recording');
       } else {
         micAvailable = true;
@@ -829,48 +836,32 @@ function toggleSidebar() {
 
 // ---- Events ----
 
-// PTT — mouse (desktop)
-btnPTT.addEventListener('mousedown', () => {
-  if (['speaking', 'working', 'thinking'].includes(currentState)) { interruptClive(); return; }
-  if (!canUseBrowserMic()) return;
-  if (isAutoListening) stopAutoListen(false);
-  manualPTT = true;
-  startRecording(false);
-});
-btnPTT.addEventListener('mouseup', () => { if (manualPTT) { manualPTT = false; stopRecording(); } });
-btnPTT.addEventListener('mouseleave', () => { if (manualPTT) { manualPTT = false; stopRecording(); } });
-
-// PTT — touch (mobile/tablet/Pi touchscreen)
-// Prevent context menu on long press which fires touchcancel and kills the hold
+// PTT — unified pointer events (desktop + mobile)
 btnPTT.addEventListener('contextmenu', (e) => e.preventDefault());
 
-btnPTT.addEventListener('touchstart', (e) => {
+function handlePtrDown(e) {
   e.preventDefault();
-  e.stopPropagation();
-  if (['speaking', 'working', 'thinking'].includes(currentState)) { interruptClive(); return; }
+  if (['speaking', 'working', 'thinking'].includes(currentState)) {
+    interruptClive();
+    manualPTT = true;
+    setTimeout(() => { if (!isRecording) startRecording(false); }, 50);
+    return;
+  }
   if (!canUseBrowserMic()) return;
   if (isAutoListening) stopAutoListen(false);
   manualPTT = true;
   startRecording(false);
-}, { passive: false });
+}
 
-btnPTT.addEventListener('touchend', (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  if (manualPTT) { manualPTT = false; stopRecording(); }
-}, { passive: false });
-
-// touchcancel fires when the browser hijacks the touch (scroll, gesture, context menu)
-// Treat it as a release so we don't get stuck in recording state
-btnPTT.addEventListener('touchcancel', (e) => {
+function handlePtrUp(e) {
   e.preventDefault();
   if (manualPTT) { manualPTT = false; stopRecording(); }
-}, { passive: false });
+}
 
-// Prevent touchmove from causing issues — keep the hold alive even if finger drifts
-btnPTT.addEventListener('touchmove', (e) => {
-  e.preventDefault();
-}, { passive: false });
+btnPTT.addEventListener('pointerdown', handlePtrDown);
+btnPTT.addEventListener('pointerup', handlePtrUp);
+btnPTT.addEventListener('pointercancel', handlePtrUp);
+btnPTT.addEventListener('pointerleave', handlePtrUp);
 
 // Confirm
 btnConfirm.addEventListener('click', () => { send('confirmation_response', { confirmed: true }); confirmation.classList.add('hidden'); });
@@ -890,6 +881,13 @@ bindSetting(settingAmbientMotion, 'ambientMotion');
 bindSetting(settingCompactMode, 'compactMode');
 bindSetting(settingShowHistory, 'showHistory');
 bindSetting(settingLargeText, 'largeText');
+
+if (btnExitKiosk) {
+  btnExitKiosk.addEventListener('click', async () => {
+    try { await fetch('/api/exit-kiosk', { method: 'POST' }); }
+    catch (err) { console.warn('Failed to exit kiosk mode:', err); }
+  });
+}
 
 window.addEventListener('resize', updateDashboard);
 

@@ -869,6 +869,14 @@ body {
   color: var(--text-primary);
 }
 
+#display-card .dc-image {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  margin: 10px 0;
+  box-shadow: var(--shadow);
+  display: block;
+}
+
 @media (max-width: 600px) {
   #display-card {
     max-height: 40vh;

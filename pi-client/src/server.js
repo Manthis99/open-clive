@@ -9,6 +9,7 @@
 
 const express = require('express');
 const path = require('path');
+const { exec } = require('child_process');
 
 const PI_UI_PORT = parseInt(process.env.PI_UI_PORT || '3000', 10);
 const DEFAULT_HOSTNAME = process.env.CLIVE_HOSTNAME || 'localhost';
@@ -30,6 +31,14 @@ app.get('/clive-config.js', (_req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, '../public')));
+
+app.post('/api/exit-kiosk', (_req, res) => {
+  console.log('[Pi] Killing Chromium kiosk via UI hardware button...');
+  exec('pkill chromium', (err) => {
+    if (err) console.error('[Pi] Could not kill Chromium (may not be running).', err);
+    res.sendStatus(200);
+  });
+});
 
 app.listen(PI_UI_PORT, () => {
   console.log(`[Pi] UI serving on http://localhost:${PI_UI_PORT}`);

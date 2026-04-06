@@ -19,6 +19,7 @@ const { getResponse } = require('./personality/engine');
 const { executeTurn, getAgentRuntimeStatus, initGateway, shutdownGateway, onGatewayEvent } = require('./agent/openclaw');
 const { addTurn, getRecentTurns, SPEAKER_CLIVE, SPEAKER_USER } = require('./context/conversation-buffer');
 const { shapeResponse } = require('./context/response-shaper');
+const { startHeartbeat, stopHeartbeat, resetHeartbeatActivity } = require('./context/heartbeat');
 
 const PORT = process.env.HOST_PORT || 3100;
 const FALLBACK_TO_LOCAL_LLM = process.env.CLIVE_FALLBACK_TO_LOCAL_LLM !== '0';
@@ -228,6 +229,7 @@ function createClientTransport() {
 async function handleWakeWord(ws) {
   console.log('[Host] Wake word detected');
   hostRuntimeStatus.lastWakeWordAt = Date.now();
+  resetHeartbeatActivity();
   const transport = createClientTransport();
 
   // Immediately acknowledge with state change
@@ -463,6 +465,9 @@ function detectCategory(text) {
 
 // Connect to OpenClaw Gateway WebSocket
 initGateway();
+
+// Start Background Heartbeat
+startHeartbeat(broadcastJson);
 
 // Listen for proactive events from OpenClaw (heartbeat nudges, etc.)
 onGatewayEvent((event) => {

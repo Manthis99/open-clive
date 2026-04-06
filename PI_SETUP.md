@@ -71,15 +71,20 @@ Open the Pi's browser to `http://localhost:3000` (or it auto-opens on the touchs
 
 The wake word listener runs as a Python sidecar, always listening for "Hey Clive":
 
+> [!IMPORTANT]
+> **Wake Word Model Required**
+> The `clive-listener/models/` directory is empty by default because we do not distribute the `.onnx` weight files. The listener will fail silently if no model is present. You **must** train and generate this file before running the listener!
+
 ```bash
-# Install Python dependencies
+# 1. Install Python dependencies
 pip install -r clive-listener/requirements.txt
 
-# Train the wake word model (or copy hey_clive.onnx from another machine)
+# 2. Train the wake word model (requires ~1-2 mins on a host machine)
 cd clive-listener/tools
 python train_wake_word.py --wake-word "hey clive" --epochs 2000
 
-# Run the listener
+# This outputs `./models/hey_clive.onnx` automatically.
+# 3. Run the listener
 cd ..
 python listener.py --host ws://HOST_IP:3100 --wake-word "hey clive" --sensitivity 7 --debug
 ```
@@ -138,6 +143,35 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+```
+
+Optionally create a third service to launch the touchscreen browser in **Kiosk Mode**:
+
+```bash
+sudo nano /etc/systemd/system/clive-kiosk.service
+```
+
+```ini
+[Unit]
+Description=Clive Kiosk Browser
+After=graphical.target clive-ui.service
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/chromium-browser --kiosk --incognito --disable-infobars --noerrdialogs http://localhost:3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target
+```
+
+Then enable and start everything:
+```bash
+sudo systemctl enable clive-ui clive-listener clive-kiosk
+sudo systemctl start clive-ui clive-listener clive-kiosk
 ```
 
 ## Host Setup

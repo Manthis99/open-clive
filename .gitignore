@@ -24,6 +24,7 @@ venv/
 
 # External repos (cloned separately)
 external/
+TARS-AI/
 
 # Temp / runtime
 *.tmp
