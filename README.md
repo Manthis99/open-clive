@@ -117,9 +117,10 @@ Set `MOCK_STT=1`, `MOCK_TTS=1`, `MOCK_LLM=1`, `MOCK_AGENT=1` in `.env` for full 
 
 1. **CSM** (local GPU) -- context-aware speech, free, requires NVIDIA GPU
 2. **Resemble** (cloud) -- if API key set
-3. **ElevenLabs** (cloud) -- if API key set
-4. **Piper** (local CPU) -- if ONNX model present
-5. **Mock** -- silent fallback
+3. **Google Gemini TTS** (cloud) -- if enabled with Google Cloud auth
+4. **ElevenLabs** (cloud) -- if API key set
+5. **Piper** (local CPU) -- if ONNX model present
+6. **Mock** -- silent fallback
 
 ### STT
 
@@ -144,6 +145,11 @@ Clive's personality is defined in:
 - `openclaw-clive-workspace/MEMORY.md` -- curated long-term memory
 - `openclaw-clive-workspace/USER.md` -- context about the human
 
+Workspace file roles follow OpenClaw's agent-workspace model:
+- `SOUL.md` should hold persona, tone, and boundaries
+- `IDENTITY.md` should stay short and define Clive's name and vibe
+- `MEMORY.md` should hold curated long-term context, not duplicate soul rules
+
 When OpenClaw is connected, Clive uses the full workspace with tools, memory, and agency. When it's unavailable, the fallback personality engine uses `system-prompt.txt` with Claude Haiku.
 
 ## Environment Variables
@@ -157,6 +163,11 @@ Key variables:
 | `ANTHROPIC_API_KEY` | Fallback personality engine |
 | `OPENCLAW_AGENT` | OpenClaw agent name (default: `clive`) |
 | `OPENCLAW_GATEWAY_TOKEN` | Bearer token for OpenClaw gateway |
+| `GOOGLE_TTS_ENABLED` | Enable Google Gemini TTS (`1` or `0`) |
+| `GOOGLE_CLOUD_PROJECT` | Google Cloud billing/project header for TTS |
+| `GOOGLE_TTS_LANGUAGE_CODE` | Google TTS locale, e.g. `en-AU` |
+| `GOOGLE_TTS_VOICE_NAME` | Google Gemini TTS prebuilt voice, e.g. `Kore` |
+| `GOOGLE_TTS_STYLE_PROMPT` | Google TTS style instructions / prompt |
 | `CSM_ENABLED` | Enable CSM local TTS (`1` or `0`) |
 | `CSM_VOICE_SEED` | Path to reference audio for voice identity |
 | `WHISPER_DEVICE` | `cuda` or `cpu` |

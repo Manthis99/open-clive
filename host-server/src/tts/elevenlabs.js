@@ -13,6 +13,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { GoogleAuth } = require('google-auth-library');
 const { MessageType, createMessage } = require('../../../shared/schemas/messages');
 
 const API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -22,6 +23,12 @@ const RESEMBLE_API_KEY = process.env.RESEMBLE_API_KEY;
 const RESEMBLE_VOICE_UUID = process.env.RESEMBLE_VOICE_UUID || 'bec88a80';
 const RESEMBLE_MODEL = process.env.RESEMBLE_MODEL || 'chatterbox-turbo';
 const RESEMBLE_SAMPLE_RATE = parseInt(process.env.RESEMBLE_SAMPLE_RATE || '22050', 10);
+const GOOGLE_TTS_ENABLED =
+  process.env.GOOGLE_TTS_ENABLED === '1' || process.env.GOOGLE_TTS_ENABLED === 'true';
+const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT;
+const GOOGLE_TTS_LANGUAGE_CODE = process.env.GOOGLE_TTS_LANGUAGE_CODE || 'en-AU';
+const GOOGLE_TTS_VOICE_NAME = process.env.GOOGLE_TTS_VOICE_NAME || 'en-AU-Chirp3-HD-Fenrir';
+const GOOGLE_TTS_SAMPLE_RATE = parseInt(process.env.GOOGLE_TTS_SAMPLE_RATE || '24000', 10);
 const CACHE_DIR = path.join(__dirname, '../../../pi-client/public/audio');
 const TTS_SPEED = parseFloat(process.env.CLIVE_TTS_SPEED || '1.35');
 const FFMPEG_BIN = process.env.FFMPEG_BIN || 'ffmpeg';
@@ -35,6 +42,7 @@ const VENV_PYTHON = IS_WINDOWS
 
 const USE_MOCK = process.env.MOCK_TTS === '1' || process.env.MOCK_TTS === 'true';
 const CSM_ENABLED = process.env.CSM_ENABLED === '1';
+const HAS_GOOGLE_TTS = GOOGLE_TTS_ENABLED && !!GOOGLE_CLOUD_PROJECT;
 const HAS_RESEMBLE = !!RESEMBLE_API_KEY;
 const HAS_ELEVENLABS = !!API_KEY;
 const HAS_PIPER = fs.existsSync(PIPER_MODEL) && fs.existsSync(VENV_PYTHON);
@@ -47,6 +55,8 @@ if (USE_MOCK) {
   ttsEngine = 'mock';
 } else if (CSM_ENABLED) {
   ttsEngine = 'csm';
+} else if (HAS_GOOGLE_TTS) {
+  ttsEngine = 'google';
 } else if (HAS_RESEMBLE) {
   ttsEngine = 'resemble';
 } else if (HAS_ELEVENLABS) {
@@ -58,6 +68,7 @@ if (USE_MOCK) {
 const ENGINE_LABELS = {
   mock: '',
   csm: ' (local GPU)',
+  google: ' (cloud)',
   resemble: ' (cloud)',
   elevenlabs: ' (cloud)',
   piper: ' (local CPU)',
@@ -71,6 +82,8 @@ async function speak(ws, text, contextSegments = []) {
   switch (ttsEngine) {
     case 'csm':
       return speakWithCSM(ws, text, contextSegments);
+    case 'google':
+      return speakGoogle(ws, text);
     case 'resemble':
       return speakResemble(ws, text);
     case 'elevenlabs':
@@ -91,7 +104,8 @@ async function speakWithCSM(ws, text, contextSegments = []) {
     }
     if (!csmModule.isCSMReady()) {
       console.warn('[TTS] CSM not ready, falling back to next available engine');
-      // Fallback chain: Resemble > ElevenLabs > Piper > Mock
+      // Fallback chain: Google > Resemble > ElevenLabs > Piper > Mock
+      if (HAS_GOOGLE_TTS) return speakGoogle(ws, text);
       if (HAS_RESEMBLE) return speakResemble(ws, text);
       if (HAS_ELEVENLABS) return speakElevenLabs(ws, text);
       if (HAS_PIPER) return speakPiper(ws, text);
@@ -100,6 +114,7 @@ async function speakWithCSM(ws, text, contextSegments = []) {
     return await csmModule.speakCSM(ws, text, contextSegments);
   } catch (e) {
     console.error('[TTS/CSM] Error, falling back:', e.message);
+    if (HAS_GOOGLE_TTS) return speakGoogle(ws, text);
     if (HAS_ELEVENLABS) return speakElevenLabs(ws, text);
     if (HAS_PIPER) return speakPiper(ws, text);
     return mockSpeak(ws, text);
@@ -123,6 +138,107 @@ async function shutdownTTS() {
   if (csmModule) {
     await csmModule.shutdownCSM();
   }
+}
+
+// ---- Google Gemini TTS (cloud) ----
+
+const googleAuth = HAS_GOOGLE_TTS
+  ? new GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    })
+  : null;
+
+async function speakGoogle(ws, text) {
+  try {
+    const authClient = await googleAuth.getClient();
+    const accessTokenResponse = await authClient.getAccessToken();
+    const accessToken =
+      typeof accessTokenResponse === 'string'
+        ? accessTokenResponse
+        : accessTokenResponse?.token;
+
+    if (!accessToken) {
+      throw new Error('No Google Cloud access token available');
+    }
+
+    const response = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'x-goog-user-project': GOOGLE_CLOUD_PROJECT,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        input: { text },
+        voice: {
+          languageCode: GOOGLE_TTS_LANGUAGE_CODE,
+          name: GOOGLE_TTS_VOICE_NAME,
+        },
+        audioConfig: {
+          audioEncoding: 'LINEAR16',
+          sampleRateHertz: GOOGLE_TTS_SAMPLE_RATE,
+        },
+      }),
+    });
+
+    const rawText = await response.text();
+    if (!response.ok) {
+      throw new Error(`Google TTS API error ${response.status}: ${rawText || 'no response body'}`);
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(rawText);
+    } catch (error) {
+      throw new Error(`Failed to parse Google TTS response: ${error.message}`);
+    }
+
+    if (!payload?.audioContent) {
+      throw new Error('Google TTS returned no audio');
+    }
+
+    const pcmAudio = Buffer.from(payload.audioContent, 'base64');
+    const wavAudio = wrapPcmAsWav(pcmAudio, GOOGLE_TTS_SAMPLE_RATE);
+
+    if (ws.readyState === 1) {
+      ws.send(wavAudio);
+      ws.send(createMessage(MessageType.RESPONSE_AUDIO_END));
+    }
+
+    console.log(
+      `[TTS/Google] Sent ${(wavAudio.length / 1024).toFixed(1)}kb audio using ${GOOGLE_TTS_LANGUAGE_CODE}/${GOOGLE_TTS_VOICE_NAME}`
+    );
+  } catch (e) {
+    console.error('[TTS/Google] Error:', e.message);
+    if (HAS_RESEMBLE) return speakResemble(ws, text);
+    if (HAS_ELEVENLABS) return speakElevenLabs(ws, text);
+    if (HAS_PIPER) return speakPiper(ws, text);
+    if (ws.readyState === 1) {
+      ws.send(createMessage(MessageType.RESPONSE_AUDIO_END));
+    }
+  }
+}
+
+function wrapPcmAsWav(pcmBuffer, sampleRate, channels = 1, bitsPerSample = 16) {
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcmBuffer.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcmBuffer.length, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
 }
 
 // ---- Resemble (cloud) ----
