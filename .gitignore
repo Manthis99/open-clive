@@ -25,6 +25,7 @@ venv/
 # External repos (cloned separately)
 external/
 TARS-AI/
+clive-pi-client/
 
 # Temp / runtime
 *.tmp
@@ -47,6 +48,10 @@ tunnel.log
 # OS
 Thumbs.db
 Desktop.ini
+
+# Sensitive config backups
+openclaw.json.bak
+*.bak
 
 # Voice seed WAV files are committed (small, essential for CSM voice identity)
 # Override the general pattern:

@@ -34,6 +34,7 @@ const OPENCLAW_SESSION_KEY = process.env.OPENCLAW_SESSION_KEY || `agent:${OPENCL
 const OPENCLAW_STATE_DIR =
   process.env.OPENCLAW_CLIENT_STATE_DIR ||
   path.join(os.homedir(), '.openclaw', 'clive-gateway-client');
+const OPENCLAW_IDLE_TIMEOUT_MS = parseInt(process.env.OPENCLAW_IDLE_TIMEOUT_MS || '1800000', 10);
 const OPENCLAW_IDENTITY_PATH = path.join(OPENCLAW_STATE_DIR, 'identity.json');
 const OPENCLAW_DEVICE_AUTH_PATH = path.join(OPENCLAW_STATE_DIR, 'device-auth.json');
 const GATEWAY_WS_URL = OPENCLAW_GATEWAY_URL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
@@ -65,6 +66,7 @@ let connectSent = false;
 let connectTimer = null;
 let reconnectTimer = null;
 let tickTimer = null;
+let idleTimer = null;
 let lastTickAt = null;
 let helloSnapshot = null;
 let pendingConnect = null;
@@ -645,6 +647,8 @@ async function executeTurn(ws, userRequest) {
     return mockExecute(ws, userRequest);
   }
 
+  resetIdleTimer();
+
   if (!OPENCLAW_GATEWAY_TOKEN && !OPENCLAW_GATEWAY_PASSWORD) {
     const error = 'OPENCLAW_GATEWAY_TOKEN or OPENCLAW_GATEWAY_PASSWORD is required';
     agentRuntimeStatus.lastError = error;
@@ -679,6 +683,7 @@ async function executeTurn(ws, userRequest) {
         reject,
         timer,
         deltaText: '',
+        ws,
       });
     });
 
@@ -724,6 +729,7 @@ function handleChatEvent(payload) {
     const delta = extractResponseText(payload.message);
     if (delta) {
       pending.deltaText = delta.length >= pending.deltaText.length ? delta : pending.deltaText;
+      sendTaskStatus(pending.ws, OPENCLAW_STATUS_LABEL, pending.deltaText);
     }
     return;
   }
@@ -797,6 +803,19 @@ function onGatewayEvent(listener) {
   return () => eventListeners.delete(listener);
 }
 
+function resetIdleTimer() {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+  if (OPENCLAW_IDLE_TIMEOUT_MS <= 0) return;
+  
+  idleTimer = setTimeout(() => {
+    console.log(`[Agent] Gateway idle timeout reached (${OPENCLAW_IDLE_TIMEOUT_MS}ms), shutting down connection`);
+    shutdownGateway();
+  }, OPENCLAW_IDLE_TIMEOUT_MS);
+}
+
 function initGateway() {
   if (USE_MOCK) return;
   ensureConnected().catch((error) => {
@@ -804,6 +823,7 @@ function initGateway() {
     agentRuntimeStatus.lastErrorAt = Date.now();
     console.warn('[Agent] Gateway connect pending:', error.message);
   });
+  resetIdleTimer();
 }
 
 function shutdownGateway() {
@@ -818,6 +838,10 @@ function shutdownGateway() {
   if (tickTimer) {
     clearInterval(tickTimer);
     tickTimer = null;
+  }
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
   }
 
   if (gatewaySocket) {

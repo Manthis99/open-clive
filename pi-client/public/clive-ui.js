@@ -1,7 +1,7 @@
 /**
- * Clive UI — Responsive companion interface
+ * Clive UI — Chat-first companion interface
  * WebSocket, audio capture/playback, VAD, auto-listen, barge-in,
- * conversation history, settings persistence, sidebar toggle.
+ * chat bubbles, voice overlay, settings persistence.
  */
 
 const CLIVE_CONFIG = window.CLIVE_CONFIG || {};
@@ -10,63 +10,51 @@ const STATUS_URL = `${(CLIVE_CONFIG.hostHttpUrl || `http://${location.hostname |
 
 // ---- DOM refs ----
 
-const app = document.getElementById('app');
-const stateLabel = document.getElementById('state-label');
-const heroBadge = document.getElementById('hero-badge');
-const clockDisplay = document.getElementById('clock-display');
-const connectionText = document.getElementById('connection-text');
+const app           = document.getElementById('app');
+const stateLabel    = document.getElementById('state-label');
+const clockDisplay  = document.getElementById('clock-display');
 const connectionDot = document.getElementById('connection-dot');
-const historyEl = document.getElementById('history');
-const historySection = document.getElementById('history-section');
-const transcript = document.getElementById('transcript');
-const response = document.getElementById('response');
-const taskStatus = document.getElementById('task-status');
-const taskLabel = document.getElementById('task-label');
-const taskProgress = document.getElementById('task-progress');
-const confirmation = document.getElementById('confirmation');
+const chat          = document.getElementById('chat');
+const chatInner     = document.getElementById('chat-inner');
+const chatEmpty     = document.getElementById('chat-empty');
+const textInput     = document.getElementById('text-input');
+const btnTextSend   = document.getElementById('btn-text-send');
+const btnPTT        = document.getElementById('btn-push-to-talk');
+const voiceOverlay  = document.getElementById('voice-overlay');
+const voiceLabel    = document.getElementById('voice-label');
+const voiceTask     = document.getElementById('voice-task');
+const btnVoiceCancel = document.getElementById('btn-voice-cancel');
+const confirmation  = document.getElementById('confirmation');
 const confirmMessage = document.getElementById('confirm-message');
-const btnConfirm = document.getElementById('btn-confirm');
-const btnDeny = document.getElementById('btn-deny');
-const interactionHint = document.getElementById('interaction-hint');
-const btnPTT = document.getElementById('btn-push-to-talk');
-const btnPTTLabel = btnPTT.querySelector('.ptt-label');
-const btnStatusToggle = document.getElementById('btn-status-toggle');
-const btnSettings = document.getElementById('btn-settings');
-const btnCloseSettings = document.getElementById('btn-close-settings');
+const btnConfirm    = document.getElementById('btn-confirm');
+const btnDeny       = document.getElementById('btn-deny');
 const settingsPanel = document.getElementById('settings-panel');
 const settingsBackdrop = document.getElementById('settings-backdrop');
-const sidebar = document.getElementById('sidebar');
+const btnSettings   = document.getElementById('btn-settings');
+const btnCloseSettings = document.getElementById('btn-close-settings');
+const btnExitKiosk  = document.getElementById('btn-exit-kiosk');
 
-// Dashboard elements
-const metricMode = document.getElementById('metric-mode');
-const metricWakeWord = document.getElementById('metric-wake-word');
-const metricAudio = document.getElementById('metric-audio');
-const metricDevice = document.getElementById('metric-device');
-const hostBridgeMode = document.getElementById('host-bridge-mode');
-const hostAgentId = document.getElementById('host-agent-id');
-const hostAgentHealth = document.getElementById('host-agent-health');
-const hostLastTranscript = document.getElementById('host-last-transcript');
-const notePrimary = document.getElementById('note-primary');
-const noteSecondary = document.getElementById('note-secondary');
-const noteTertiary = document.getElementById('note-tertiary');
-const previewAutoListen = document.getElementById('preview-auto-listen');
-const previewBargeIn = document.getElementById('preview-barge-in');
-const previewAutoTimeout = document.getElementById('preview-auto-timeout');
-const previewAmbientMotion = document.getElementById('preview-ambient-motion');
-const previewLargeText = document.getElementById('preview-large-text');
-const settingAutoListen = document.getElementById('setting-auto-listen');
-const settingBargeIn = document.getElementById('setting-barge-in');
+// Settings controls
+const settingAutoListen       = document.getElementById('setting-auto-listen');
+const settingBargeIn          = document.getElementById('setting-barge-in');
 const settingAutoListenTimeout = document.getElementById('setting-auto-listen-timeout');
-const settingAmbientMotion = document.getElementById('setting-ambient-motion');
-const settingCompactMode = document.getElementById('setting-compact-mode');
-const settingShowHistory = document.getElementById('setting-show-history');
-const settingLargeText = document.getElementById('setting-large-text');
-const btnExitKiosk = document.getElementById('btn-exit-kiosk');
+const settingAmbientMotion    = document.getElementById('setting-ambient-motion');
+const settingLargeText        = document.getElementById('setting-large-text');
+const settingTtsEnabled       = document.getElementById('setting-tts-enabled');
+
+// System status (inside settings panel)
+const metricMode         = document.getElementById('metric-mode');
+const metricWakeWord     = document.getElementById('metric-wake-word');
+const metricAudio        = document.getElementById('metric-audio');
+const hostAgentId        = document.getElementById('host-agent-id');
+const hostAgentHealth    = document.getElementById('host-agent-health');
+const hostLastTranscript = document.getElementById('host-last-transcript');
 
 // ---- State ----
 
 let ws = null;
 let currentState = 'idle';
+let voiceMode = false;          // true when current/last turn was initiated by voice
 let mediaStream = null;
 let audioContext = null;
 let audioProcessor = null;
@@ -78,12 +66,14 @@ let isStartingRecording = false;
 let pendingStopAfterStart = false;
 let micAvailable = true;
 let manualPTT = false;
+let activePointerId = null;
 
-// Conversation
-let conversationHistory = [];
-const MAX_HISTORY = 4;
+// Chat
 let currentTranscript = '';
 let currentResponse = '';
+let currentCliveBubble = null;  // the most recent Clive bubble element
+let pendingBubbleEl = null;     // the in-progress thinking/working bubble
+const MAX_BUBBLES = 24;
 
 // Audio playback
 let audioQueue = [];
@@ -114,7 +104,8 @@ let autoListenStartupTimer = null;
 let lastHostStatus = null;
 let listenerConnected = false;
 
-// Settings
+// ---- Settings ----
+
 const SETTINGS_KEY = 'clive_dashboard_settings_v1';
 
 function loadSettings() {
@@ -123,9 +114,8 @@ function loadSettings() {
     autoListenTimeoutMs: 5000,
     bargeIn: true,
     ambientMotion: true,
-    compactMode: false,
-    showHistory: true,
     largeText: false,
+    ttsEnabled: true,
   };
   try {
     const saved = localStorage.getItem(SETTINGS_KEY);
@@ -147,15 +137,13 @@ function connect() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    send('client_hello', { role: 'display', canReceiveAudio: true });
+    send('client_hello', { role: 'display', canReceiveAudio: settings.ttsEnabled });
     connectionDot.classList.add('connected');
-    connectionText.textContent = 'Connected';
     updateDashboard();
   };
 
   ws.onclose = () => {
     connectionDot.classList.remove('connected');
-    connectionText.textContent = 'Reconnecting';
     updateDashboard();
     setTimeout(connect, 2000);
   };
@@ -179,17 +167,17 @@ function connect() {
 
 function handleMessage(msg) {
   switch (msg.type) {
-    case 'state_change': setState(msg.payload.state); break;
-    case 'transcript': showTranscript(msg.payload.text); break;
-    case 'response_text': showResponse(msg.payload.text, msg.payload.streaming); break;
+    case 'state_change':        setState(msg.payload.state); break;
+    case 'transcript':          showTranscript(msg.payload.text); break;
+    case 'response_text':       showResponse(msg.payload.text, msg.payload.streaming); break;
     case 'response_audio_end':
       serverAudioEnded = true;
       if (!isPlaybackActive()) onAudioPlaybackDone();
       break;
-    case 'response_display': showDisplayCard(msg.payload.text, msg.payload.summary); break;
-    case 'task_status': showTaskStatus(msg.payload.label, msg.payload.progress); break;
+    case 'response_display':    showDisplayCard(msg.payload.text, msg.payload.summary); break;
+    case 'task_status':         showTaskStatus(msg.payload.label, msg.payload.progress); break;
     case 'confirmation_request': showConfirmation(msg.payload.message); break;
-    case 'error': showError(msg.payload.error); break;
+    case 'error':               showError(msg.payload.error); break;
   }
 }
 
@@ -202,58 +190,73 @@ function handleAudioChunk(buffer) {
 // ---- State Machine ----
 
 const stateLabels = {
-  idle: 'ready',
+  idle:      'ready',
   listening: 'listening',
-  thinking: 'thinking',
-  speaking: 'speaking',
-  working: 'working',
+  thinking:  'thinking',
+  speaking:  'speaking',
+  working:   'working',
   confirming: 'confirm',
-  error: 'error',
+  error:     'error',
 };
 
 function setState(newState) {
   if (newState === 'idle' && isPlaybackActive()) {
     deferredState = 'idle';
-    updatePTTButton('speaking');
     return;
   }
 
   if (currentState === newState) return;
   const prevState = currentState;
+  currentState = newState;
 
   app.className = `state-${newState}`;
   stateLabel.textContent = stateLabels[newState] || newState;
 
+  // Voice overlay: show when voice-initiated, hide on terminal states
+  if (voiceMode && ['listening', 'thinking', 'working'].includes(newState)) {
+    showVoiceOverlay(newState);
+  } else if (['speaking', 'idle', 'error', 'confirming'].includes(newState)) {
+    hideVoiceOverlay();
+  }
+
+  // For text turns: show pending bubble on thinking/working
+  if (!voiceMode && ['thinking', 'working'].includes(newState) && !pendingBubbleEl) {
+    showPendingBubble();
+  }
+
+  // Clear voiceMode on terminal states (speaking hides overlay, idle/error fully reset)
+  if (['speaking', 'idle', 'error'].includes(newState)) {
+    voiceMode = false;
+  }
+
+  // Mic button
+  btnPTT.classList.toggle('recording', newState === 'listening');
+
+  // Speaking border on current Clive bubble
+  if (currentCliveBubble) {
+    currentCliveBubble.classList.toggle('bubble-speaking', newState === 'speaking');
+  }
+
+  // Clear confirmation on new turn
   if (newState === 'listening') {
     confirmation.classList.add('hidden');
-    taskStatus.classList.add('hidden');
-    btnPTT.classList.add('recording');
   }
 
-  if (prevState === 'listening') {
-    btnPTT.classList.remove('recording');
-  }
-
-  updatePTTButton(newState);
-
-  if (newState === 'idle' && (prevState === 'speaking' || prevState === 'working')) {
-    if (currentTranscript && currentResponse) {
-      addToHistory(currentTranscript, currentResponse);
-    }
+  // Clean up refs when fully idle
+  if (newState === 'idle') {
     setTimeout(() => {
       if (currentState === 'idle') {
-        response.textContent = '';
-        transcript.classList.add('hidden');
-        taskStatus.classList.add('hidden');
+        currentCliveBubble = null;
+        currentTranscript = '';
+        currentResponse = '';
       }
-    }, 8000);
+    }, 200);
   }
 
   if (newState === 'error') {
     setTimeout(() => { if (currentState === 'error') setState('idle'); }, 5000);
   }
 
-  currentState = newState;
   updateDashboard();
 }
 
@@ -285,6 +288,7 @@ async function startAutoListen() {
   vadSpeechDetected = false;
 
   try {
+    voiceMode = true;
     await startRecording(true);
     vadNoSpeechTimer = setTimeout(() => {
       if (isAutoListening && !vadSpeechDetected) stopAutoListen(false);
@@ -292,6 +296,7 @@ async function startAutoListen() {
   } catch (e) {
     console.error('[AutoListen] Failed:', e);
     isAutoListening = false;
+    voiceMode = false;
   }
 }
 
@@ -327,54 +332,168 @@ function processVAD(pcmData) {
   }
 }
 
-// ---- Conversation History ----
+// ---- Chat / Bubble Management ----
 
-function addToHistory(userText, cliveText) {
-  conversationHistory.push({ user: userText, clive: cliveText });
-  if (conversationHistory.length > MAX_HISTORY) conversationHistory.shift();
-  renderHistory();
+function scrollChat() {
+  chat.scrollTop = chat.scrollHeight;
+  // Prune oldest bubbles to keep DOM lean
+  while (chatInner.children.length > MAX_BUBBLES) {
+    const oldest = chatInner.firstChild;
+    if (oldest === pendingBubbleEl) break;
+    chatInner.removeChild(oldest);
+  }
 }
 
-function renderHistory() {
-  historyEl.innerHTML = conversationHistory.map(entry => `
-    <div class="history-entry">
-      <div class="history-user">${esc(entry.user)}</div>
-      <div class="history-clive">${esc(entry.clive)}</div>
-    </div>
-  `).join('');
-  historyEl.scrollTop = historyEl.scrollHeight;
+function hideChatEmpty() {
+  if (chatEmpty && !chatEmpty.classList.contains('hidden')) {
+    chatEmpty.classList.add('hidden');
+  }
 }
 
-function esc(text) {
-  const d = document.createElement('div');
-  d.textContent = text;
-  return d.innerHTML;
+function addUserBubble(text) {
+  hideChatEmpty();
+  const el = document.createElement('div');
+  el.className = 'bubble bubble-user';
+  const body = document.createElement('div');
+  body.className = 'bubble-body';
+  body.textContent = text;
+  el.appendChild(body);
+  chatInner.appendChild(el);
+  scrollChat();
+  return el;
+}
+
+function addCliveBubble(text) {
+  hideChatEmpty();
+  const el = document.createElement('div');
+  el.className = 'bubble bubble-clive';
+  const avatar = document.createElement('div');
+  avatar.className = 'bubble-avatar';
+  const body = document.createElement('div');
+  body.className = 'bubble-body';
+  const textEl = document.createElement('div');
+  textEl.className = 'bubble-text';
+  textEl.textContent = text;
+  body.appendChild(textEl);
+  el.appendChild(avatar);
+  el.appendChild(body);
+  chatInner.appendChild(el);
+  scrollChat();
+  currentCliveBubble = el;
+  return el;
+}
+
+function showPendingBubble() {
+  if (pendingBubbleEl) return;
+  hideChatEmpty();
+  const el = document.createElement('div');
+  el.className = 'bubble bubble-clive bubble-pending';
+  const avatar = document.createElement('div');
+  avatar.className = 'bubble-avatar';
+  const body = document.createElement('div');
+  body.className = 'bubble-body';
+  const dots = document.createElement('div');
+  dots.className = 'thinking-dots';
+  dots.innerHTML = '<span></span><span></span><span></span>';
+  const taskEl = document.createElement('div');
+  taskEl.className = 'pending-task hidden';
+  body.appendChild(dots);
+  body.appendChild(taskEl);
+  el.appendChild(avatar);
+  el.appendChild(body);
+  chatInner.appendChild(el);
+  scrollChat();
+  pendingBubbleEl = el;
+}
+
+function updatePendingBubble(progress) {
+  if (!pendingBubbleEl) return;
+  const p = (progress || '').trim();
+  const t = (currentTranscript || '').trim();
+  if (!p || p === t) return;
+  const taskEl = pendingBubbleEl.querySelector('.pending-task');
+  const dots = pendingBubbleEl.querySelector('.thinking-dots');
+  if (taskEl && dots) {
+    dots.classList.add('hidden');
+    taskEl.classList.remove('hidden');
+    taskEl.textContent = p;
+  }
+  scrollChat();
+}
+
+function resolvePendingBubble(text) {
+  if (!pendingBubbleEl) {
+    addCliveBubble(text);
+    return;
+  }
+  const body = pendingBubbleEl.querySelector('.bubble-body');
+  if (body) {
+    body.innerHTML = '';
+    const textEl = document.createElement('div');
+    textEl.className = 'bubble-text';
+    textEl.textContent = text;
+    body.appendChild(textEl);
+  }
+  pendingBubbleEl.classList.remove('bubble-pending');
+  currentCliveBubble = pendingBubbleEl;
+  pendingBubbleEl = null;
+  scrollChat();
+}
+
+// ---- Voice Overlay ----
+
+function showVoiceOverlay(state) {
+  const labels = { listening: 'Listening', thinking: 'Processing', working: 'Working' };
+  voiceOverlay.classList.remove('hidden', 'mode-listening', 'mode-thinking', 'mode-working');
+  voiceOverlay.classList.add(`mode-${state}`);
+  voiceLabel.textContent = labels[state] || state;
+  if (state !== 'working') voiceTask.textContent = '';
+}
+
+function hideVoiceOverlay() {
+  voiceOverlay.classList.add('hidden');
+  voiceTask.textContent = '';
 }
 
 // ---- UI Updates ----
 
 function showTranscript(text) {
-  const card = document.getElementById('display-card');
-  if (card) card.classList.add('hidden');
   currentTranscript = text;
-  transcript.textContent = text;
-  transcript.classList.remove('hidden');
-  updateDashboard();
+  if (voiceMode) {
+    // Voice turn: add user bubble to chat (overlay is still showing on top)
+    addUserBubble(text);
+  }
+  // Text turns: bubble already added in submitTextInput()
 }
 
 function showResponse(text, streaming = false) {
-  if (streaming) { currentResponse += text; response.textContent = currentResponse; }
-  else { currentResponse = text; response.textContent = text; }
-  updateDashboard();
+  currentResponse = text;
+  if (voiceMode) {
+    // Add Clive bubble to chat behind the overlay — will be revealed when overlay hides
+    if (!currentCliveBubble) {
+      addCliveBubble(text);
+    } else {
+      const textEl = currentCliveBubble.querySelector('.bubble-text');
+      if (textEl) textEl.textContent = text;
+    }
+  } else {
+    resolvePendingBubble(text);
+  }
 }
 
 function showTaskStatus(label, progress) {
-  taskLabel.textContent = label;
   const p = (progress || '').trim();
   const t = (currentTranscript || '').trim();
-  taskProgress.textContent = (p && p !== t) ? progress : '';
-  taskStatus.classList.remove('hidden');
-  updateDashboard();
+  const display = (p && p !== t) ? p : '';
+
+  if (voiceMode) {
+    if (display) {
+      voiceTask.textContent = display;
+      voiceTask.scrollTop = voiceTask.scrollHeight;
+    }
+  } else {
+    updatePendingBubble(display || progress);
+  }
 }
 
 function showConfirmation(message) {
@@ -382,34 +501,40 @@ function showConfirmation(message) {
   confirmation.classList.remove('hidden');
 }
 
-/**
- * Show a formatted display card for long/listy content.
- * Clive speaks a brief summary but shows the full content here.
- */
 function showDisplayCard(fullText, summary) {
-  // Replace the plain response text with the summary
-  currentResponse = summary || fullText;
-  response.textContent = summary || '';
+  currentResponse = summary || fullText.substring(0, 120) + '...';
 
-  const card = document.getElementById('display-card');
-  const cardBody = document.getElementById('display-card-body');
-  if (!card || !cardBody) return;
+  // Ensure we have a bubble to attach the card to
+  if (!currentCliveBubble) addCliveBubble(summary || '');
 
-  // Format the text: convert markdown-ish content to readable HTML
-  cardBody.innerHTML = formatDisplayContent(fullText);
-  card.classList.remove('hidden');
-  card.scrollTop = 0;
-  requestAnimationFrame(() => {
-    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const body = currentCliveBubble.querySelector('.bubble-body');
+  if (!body) return;
+
+  // Update the summary text
+  const textEl = body.querySelector('.bubble-text');
+  if (textEl && summary) textEl.textContent = summary;
+
+  // Add expand/collapse toggle
+  const expandBtn = document.createElement('button');
+  expandBtn.className = 'expand-btn';
+  expandBtn.textContent = 'Show details ↓';
+
+  const details = document.createElement('div');
+  details.className = 'bubble-details hidden';
+  details.innerHTML = formatDisplayContent(fullText);
+
+  expandBtn.addEventListener('click', () => {
+    const isOpen = !details.classList.contains('hidden');
+    details.classList.toggle('hidden', isOpen);
+    expandBtn.textContent = isOpen ? 'Show details ↓' : 'Hide details ↑';
+    scrollChat();
   });
 
-  // Store the full text for history
-  currentResponse = summary || fullText.substring(0, 120) + '...';
+  body.appendChild(expandBtn);
+  body.appendChild(details);
+  scrollChat();
 }
 
-/**
- * Convert markdown-ish text into clean HTML for the display card.
- */
 function formatDisplayContent(text) {
   const lines = text.split('\n');
   let html = '';
@@ -422,7 +547,6 @@ function formatDisplayContent(text) {
       continue;
     }
 
-    // Images: ![alt](url)
     const imgMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
     if (imgMatch) {
       if (inList) { html += '</ul>'; inList = false; }
@@ -430,7 +554,6 @@ function formatDisplayContent(text) {
       continue;
     }
 
-    // Bold headers: **Section Name**
     if (/^\*\*(.+?)\*\*/.test(trimmed)) {
       if (inList) { html += '</ul>'; inList = false; }
       const title = trimmed.replace(/\*\*(.+?)\*\*/g, '$1').replace(/[-–]$/, '').trim();
@@ -438,17 +561,14 @@ function formatDisplayContent(text) {
       continue;
     }
 
-    // List items: - item, * item, • item, 1. item
     const listMatch = trimmed.match(/^\s*[-*•]\s+(.+)/) || trimmed.match(/^\s*\d+[.)]\s+(.+)/);
     if (listMatch) {
       if (!inList) { html += '<ul class="dc-list">'; inList = true; }
-      // Handle inline backticks
       const content = listMatch[1].replace(/`([^`]+)`/g, '<code>$1</code>');
       html += `<li>${content}</li>`;
       continue;
     }
 
-    // Regular paragraph
     if (inList) { html += '</ul>'; inList = false; }
     html += `<p class="dc-para">${esc(trimmed)}</p>`;
   }
@@ -459,10 +579,24 @@ function formatDisplayContent(text) {
 
 function showError(error) {
   setState('error');
-  response.textContent = error;
-  const card = document.getElementById('display-card');
-  if (card) card.classList.add('hidden');
-  updateDashboard();
+  const el = document.createElement('div');
+  el.className = 'bubble bubble-clive bubble-error';
+  const avatar = document.createElement('div');
+  avatar.className = 'bubble-avatar';
+  const body = document.createElement('div');
+  body.className = 'bubble-body';
+  body.textContent = error || 'Something went wrong.';
+  el.appendChild(avatar);
+  el.appendChild(body);
+  hideChatEmpty();
+  chatInner.appendChild(el);
+  scrollChat();
+}
+
+function esc(text) {
+  const d = document.createElement('div');
+  d.textContent = text;
+  return d.innerHTML;
 }
 
 // ---- Audio Playback ----
@@ -500,26 +634,14 @@ async function playNextChunk() {
 // ---- Audio Capture ----
 
 function canUseBrowserMic() {
-  return true; // Always allow browser mic for manual PTT.
+  return true;
 }
 
 function releaseBrowserMic() {
-  if (audioProcessor) {
-    audioProcessor.disconnect();
-    audioProcessor = null;
-  }
-  if (passiveMonitorProcessor) {
-    passiveMonitorProcessor.disconnect();
-    passiveMonitorProcessor = null;
-  }
-  if (passiveMonitorSink) {
-    passiveMonitorSink.disconnect();
-    passiveMonitorSink = null;
-  }
-  if (mediaSource) {
-    mediaSource.disconnect();
-    mediaSource = null;
-  }
+  if (audioProcessor)        { audioProcessor.disconnect(); audioProcessor = null; }
+  if (passiveMonitorProcessor) { passiveMonitorProcessor.disconnect(); passiveMonitorProcessor = null; }
+  if (passiveMonitorSink)    { passiveMonitorSink.disconnect(); passiveMonitorSink = null; }
+  if (mediaSource)           { mediaSource.disconnect(); mediaSource = null; }
   if (mediaStream) {
     for (const track of mediaStream.getTracks()) track.stop();
     mediaStream = null;
@@ -553,11 +675,7 @@ function initPassiveMonitor() {
 }
 
 async function startRecording(isAuto = false) {
-  if (!canUseBrowserMic()) {
-    micAvailable = false;
-    updateDashboard();
-    return;
-  }
+  if (!canUseBrowserMic()) { micAvailable = false; updateDashboard(); return; }
   if (isRecording || isStartingRecording) return;
   isStartingRecording = true;
   pendingStopAfterStart = false;
@@ -577,13 +695,11 @@ async function startRecording(isAuto = false) {
     isRecording = true;
     send('press_to_talk_start');
     setState('listening');
-    if (pendingStopAfterStart) {
-      pendingStopAfterStart = false;
-      stopRecording();
-    }
+    if (pendingStopAfterStart) { pendingStopAfterStart = false; stopRecording(); }
   } catch (e) {
     console.error('[Audio] Capture error:', e);
     micAvailable = false;
+    voiceMode = false;
     updateDashboard();
     if (!isAuto) simulateInteraction();
   } finally {
@@ -619,10 +735,7 @@ function processBargeIn(pcmData) {
 }
 
 function stopRecording() {
-  if (isStartingRecording && !isRecording) {
-    pendingStopAfterStart = true;
-    return;
-  }
+  if (isStartingRecording && !isRecording) { pendingStopAfterStart = true; return; }
   if (!isRecording) return;
   isRecording = false;
   clearVADTimers();
@@ -633,16 +746,13 @@ function stopRecording() {
 }
 
 function cancelRecording() {
-  if (isStartingRecording && !isRecording) {
-    pendingStopAfterStart = false;
-    isStartingRecording = false;
-    return;
-  }
+  if (isStartingRecording && !isRecording) { pendingStopAfterStart = false; isStartingRecording = false; return; }
   if (!isRecording) return;
   isRecording = false;
   clearVADTimers();
   isAutoListening = false;
   manualPTT = false;
+  voiceMode = false;
   if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
   send('cancel');
   setState('idle');
@@ -653,22 +763,25 @@ function simulateInteraction() {
   setTimeout(() => send('press_to_talk_end'), 800);
 }
 
+// ---- Text Input ----
+
+function submitTextInput() {
+  if (!textInput) return;
+  const text = textInput.value.trim();
+  if (!text) return;
+  if (['listening', 'thinking', 'working', 'speaking'].includes(currentState)) return;
+  textInput.value = '';
+  btnTextSend.classList.remove('visible');
+  currentTranscript = text;
+  addUserBubble(text);
+  send('text_input', { text });
+}
+
 // ---- Helpers ----
 
 function send(type, payload = {}) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type, payload, timestamp: Date.now() }));
-}
-
-function updatePTTButton(state = currentState) {
-  const interrupt = ['speaking', 'working', 'thinking'].includes(state);
-  btnPTT.disabled = false;
-  btnPTTLabel.textContent = interrupt ? 'Interrupt' : 'Hold to Talk';
-  if (interactionHint) {
-    interactionHint.textContent = listenerConnected
-      ? 'Auto-listen is off because the Python listener is active. Hold to talk manually.'
-      : 'Hold to talk, or interrupt when Clive is speaking.';
-  }
 }
 
 function isPlaybackActive() {
@@ -692,6 +805,7 @@ function interruptClive() {
   stopPlayback();
   stopAutoListen(false);
   if (isRecording) cancelRecording();
+  if (pendingBubbleEl) { pendingBubbleEl.remove(); pendingBubbleEl = null; }
   send('cancel');
   setState('idle');
 }
@@ -702,56 +816,17 @@ function updateClock() {
   if (clockDisplay) clockDisplay.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function getDeviceLabel() {
-  const w = window.innerWidth;
-  if (w <= 600) return 'Phone';
-  if (w <= 960) return 'Tablet';
-  return 'Desktop';
-}
-
 function updateDashboard() {
-  updatePTTButton();
-  if (metricMode) metricMode.textContent = stateLabels[currentState] || currentState;
-  if (metricWakeWord) metricWakeWord.textContent = listenerConnected ? 'Listener online' : 'Browser fallback';
+  if (metricMode)     metricMode.textContent = stateLabels[currentState] || currentState;
+  if (metricWakeWord) metricWakeWord.textContent = listenerConnected ? 'Listener online' : 'Push-to-talk';
   if (metricAudio) {
     metricAudio.textContent = listenerConnected
       ? 'Listener'
       : micAvailable ? (isRecording ? 'Listening' : isStartingRecording ? 'Arming' : 'Ready') : 'Blocked';
   }
-  if (metricDevice) metricDevice.textContent = getDeviceLabel();
-
-  if (heroBadge) {
-    const label = stateLabels[currentState] || currentState;
-    heroBadge.textContent = label.charAt(0).toUpperCase() + label.slice(1);
-  }
-
-  if (notePrimary) {
-    notePrimary.textContent = isAutoListening
-      ? `Listening for reply (${Math.round(autoListenNoSpeechTimeout / 1000)}s timeout)...`
-      : isStartingRecording ? 'Opening the mic...'
-      : currentState === 'idle' ? 'Clive is ready for voice input.'
-      : currentState === 'speaking' ? 'Clive is speaking. Interrupt by button or voice.'
-      : 'Handling current request...';
-  }
-
-  if (noteSecondary) {
-    noteSecondary.textContent = listenerConnected
-      ? 'Dedicated listener owns the microphone.'
-      : 'Browser microphone fallback is active.';
-  }
-
-  if (noteTertiary) {
-    noteTertiary.textContent = listenerConnected
-      ? 'Wake word and VAD are handled by the Python listener.'
-      : settings.bargeIn
-        ? 'Speech barge-in is enabled.'
-        : 'Barge-in is disabled in settings.';
-  }
-
   if (lastHostStatus) {
-    if (hostBridgeMode) hostBridgeMode.textContent = lastHostStatus.agent?.mode === 'gateway-http' ? 'Gateway HTTP' : 'Mock';
-    if (hostAgentId) hostAgentId.textContent = lastHostStatus.agent?.agentId || 'Unknown';
-    if (hostAgentHealth) hostAgentHealth.textContent = lastHostStatus.agent?.healthy ? 'Healthy' : 'Degraded';
+    if (hostAgentId)        hostAgentId.textContent        = lastHostStatus.agent?.agentId || 'Unknown';
+    if (hostAgentHealth)    hostAgentHealth.textContent    = lastHostStatus.agent?.healthy ? 'Healthy' : 'Degraded';
     if (hostLastTranscript) hostLastTranscript.textContent = truncate(lastHostStatus.host?.lastTranscript, 32);
   }
 }
@@ -777,7 +852,7 @@ async function refreshHostStatus() {
 
 function truncate(text, max) {
   if (!text || text.length <= max) return text || 'Waiting';
-  return text.slice(0, max - 1) + '...';
+  return text.slice(0, max - 1) + '…';
 }
 
 // ---- Settings ----
@@ -795,26 +870,20 @@ function closeSettings() {
 function applySettings() {
   autoListenEnabled = settings.autoListen;
   autoListenNoSpeechTimeout = settings.autoListenTimeoutMs;
-  document.body.classList.toggle('compact-mode', settings.compactMode);
   document.body.classList.toggle('reduce-motion', !settings.ambientMotion);
   document.body.classList.toggle('large-text', settings.largeText);
-  if (historySection) historySection.classList.toggle('hidden', !settings.showHistory);
 
-  // Sync form controls
-  if (settingAutoListen) settingAutoListen.checked = settings.autoListen;
-  if (settingBargeIn) settingBargeIn.checked = settings.bargeIn;
-  if (settingAutoListenTimeout) settingAutoListenTimeout.value = String(settings.autoListenTimeoutMs);
-  if (settingAmbientMotion) settingAmbientMotion.checked = settings.ambientMotion;
-  if (settingCompactMode) settingCompactMode.checked = settings.compactMode;
-  if (settingShowHistory) settingShowHistory.checked = settings.showHistory;
-  if (settingLargeText) settingLargeText.checked = settings.largeText;
+  if (settingAutoListen)        settingAutoListen.checked        = settings.autoListen;
+  if (settingBargeIn)           settingBargeIn.checked           = settings.bargeIn;
+  if (settingAutoListenTimeout) settingAutoListenTimeout.value   = String(settings.autoListenTimeoutMs);
+  if (settingAmbientMotion)     settingAmbientMotion.checked     = settings.ambientMotion;
+  if (settingLargeText)         settingLargeText.checked         = settings.largeText;
+  if (settingTtsEnabled)        settingTtsEnabled.checked        = settings.ttsEnabled;
 
-  // Sync preview
-  if (previewAutoListen) previewAutoListen.textContent = settings.autoListen ? 'On' : 'Off';
-  if (previewBargeIn) previewBargeIn.textContent = settings.bargeIn ? 'On' : 'Off';
-  if (previewAutoTimeout) previewAutoTimeout.textContent = `${Math.round(settings.autoListenTimeoutMs / 1000)}s`;
-  if (previewAmbientMotion) previewAmbientMotion.textContent = settings.ambientMotion ? 'On' : 'Off';
-  if (previewLargeText) previewLargeText.textContent = settings.largeText ? 'Large' : 'Standard';
+  // Notify host of updated audio preference
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    send('client_hello', { role: 'display', canReceiveAudio: settings.ttsEnabled });
+  }
 
   updateDashboard();
 }
@@ -828,64 +897,84 @@ function bindSetting(el, key, transform) {
   });
 }
 
-// ---- Sidebar toggle ----
-
-function toggleSidebar() {
-  sidebar.classList.toggle('collapsed');
-}
-
 // ---- Events ----
 
-// PTT — unified pointer events (desktop + mobile)
+// PTT mic button — unified pointer events (desktop + touch)
 btnPTT.addEventListener('contextmenu', (e) => e.preventDefault());
 
 function handlePtrDown(e) {
   e.preventDefault();
+  if (activePointerId !== null) return;
+  activePointerId = e.pointerId;
+  try { btnPTT.setPointerCapture(e.pointerId); } catch {}
+
   if (['speaking', 'working', 'thinking'].includes(currentState)) {
     interruptClive();
+    voiceMode = true;
     manualPTT = true;
     setTimeout(() => { if (!isRecording) startRecording(false); }, 50);
     return;
   }
   if (!canUseBrowserMic()) return;
   if (isAutoListening) stopAutoListen(false);
+  voiceMode = true;
   manualPTT = true;
   startRecording(false);
 }
 
 function handlePtrUp(e) {
   e.preventDefault();
-  if (manualPTT) { manualPTT = false; stopRecording(); }
+  if (activePointerId === e.pointerId) {
+    activePointerId = null;
+    try { btnPTT.releasePointerCapture(e.pointerId); } catch {}
+    if (manualPTT) { manualPTT = false; stopRecording(); }
+  }
 }
 
 btnPTT.addEventListener('pointerdown', handlePtrDown);
-btnPTT.addEventListener('pointerup', handlePtrUp);
+btnPTT.addEventListener('pointerup',   handlePtrUp);
 btnPTT.addEventListener('pointercancel', handlePtrUp);
-btnPTT.addEventListener('pointerleave', handlePtrUp);
+btnPTT.addEventListener('pointerleave',  handlePtrUp);
 
-// Confirm
-btnConfirm.addEventListener('click', () => { send('confirmation_response', { confirmed: true }); confirmation.classList.add('hidden'); });
-btnDeny.addEventListener('click', () => { send('confirmation_response', { confirmed: false }); confirmation.classList.add('hidden'); });
+// Voice overlay cancel
+btnVoiceCancel.addEventListener('click', () => {
+  interruptClive();
+  voiceMode = false;
+});
 
-// Sidebar & settings
-btnStatusToggle.addEventListener('click', toggleSidebar);
+// Text input
+if (textInput) {
+  textInput.addEventListener('input', () => {
+    btnTextSend.classList.toggle('visible', textInput.value.trim().length > 0);
+  });
+  textInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitTextInput(); }
+  });
+}
+if (btnTextSend) {
+  btnTextSend.addEventListener('click', submitTextInput);
+}
+
+// Confirmation
+btnConfirm.addEventListener('click', () => { send('confirmation_response', { confirmed: true });  confirmation.classList.add('hidden'); });
+btnDeny.addEventListener('click',    () => { send('confirmation_response', { confirmed: false }); confirmation.classList.add('hidden'); });
+
+// Settings
 btnSettings.addEventListener('click', openSettings);
 btnCloseSettings.addEventListener('click', closeSettings);
 settingsBackdrop.addEventListener('click', closeSettings);
 
-// Bind settings controls
-bindSetting(settingAutoListen, 'autoListen');
-bindSetting(settingBargeIn, 'bargeIn');
+bindSetting(settingAutoListen,        'autoListen');
+bindSetting(settingBargeIn,           'bargeIn');
 bindSetting(settingAutoListenTimeout, 'autoListenTimeoutMs', (el) => parseInt(el.value, 10));
-bindSetting(settingAmbientMotion, 'ambientMotion');
-bindSetting(settingCompactMode, 'compactMode');
-bindSetting(settingShowHistory, 'showHistory');
-bindSetting(settingLargeText, 'largeText');
+bindSetting(settingAmbientMotion,     'ambientMotion');
+bindSetting(settingLargeText,         'largeText');
+bindSetting(settingTtsEnabled,        'ttsEnabled');
 
 if (btnExitKiosk) {
   btnExitKiosk.addEventListener('click', async () => {
     try { await fetch('/api/exit-kiosk', { method: 'POST' }); }
-    catch (err) { console.warn('Failed to exit kiosk mode:', err); }
+    catch (err) { console.warn('Failed to exit kiosk:', err); }
   });
 }
 
@@ -895,12 +984,8 @@ window.addEventListener('resize', updateDashboard);
 
 applySettings();
 setState('idle');
-updatePTTButton('idle');
 updateClock();
 setInterval(updateClock, 30000);
 refreshHostStatus();
 setInterval(refreshHostStatus, 1500);
 connect();
-
-// Default sidebar: open on desktop, closed on mobile
-if (window.innerWidth > 960) sidebar.classList.remove('collapsed');

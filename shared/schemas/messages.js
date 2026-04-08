@@ -15,6 +15,7 @@ const MessageType = {
   CONFIRMATION_RESPONSE: 'confirmation_response',
   CANCEL: 'cancel',
   BARGE_IN: 'barge_in',
+  TEXT_INPUT: 'text_input',
 
   // Host -> Pi/Desktop
   STATE_CHANGE: 'state_change',

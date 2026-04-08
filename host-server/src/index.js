@@ -145,6 +145,10 @@ async function handleClientMessage(ws, msg) {
       handleCancel(ws);
       break;
 
+    case MessageType.TEXT_INPUT:
+      await handleTextInput(ws, msg.payload);
+      break;
+
     default:
       console.log('[Host] Unknown message:', msg.type);
   }
@@ -235,9 +239,7 @@ async function handleWakeWord(ws) {
   // Immediately acknowledge with state change
   sendState(transport, CliveState.LISTENING);
 
-  // Play a short wake response
-  const wakePhrase = pickRandom(['Yes?', 'Go ahead.', 'Listening.']);
-  await speakCached(transport, wakePhrase);
+  // Wake response is handled by a local chime on the Pi — no TTS here.
 
   // Now waiting for audio input (PTT or continuous)
   // Audio will arrive as binary chunks
@@ -332,14 +334,22 @@ async function handlePTTEnd(ws) {
       // Send brief spoken version + full display version
       transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: spokenText }));
       transport.send(createMessage('response_display', { text: displayText, summary: spokenText }));
-      sendState(transport, CliveState.SPEAKING);
-      await speak(transport, spokenText, contextSegments);
+      if (hasAudioClients()) {
+        sendState(transport, CliveState.SPEAKING);
+        await speak(transport, spokenText, contextSegments);
+      } else {
+        transport.send(createMessage(MessageType.RESPONSE_AUDIO_END, {}));
+      }
       // Save Clive's spoken response to context buffer
       addTurn(SPEAKER_CLIVE, spokenText, null, { brevity: responseMetadata.brevity });
     } else {
       transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: responseText }));
-      sendState(transport, CliveState.SPEAKING);
-      await speak(transport, responseText, contextSegments);
+      if (hasAudioClients()) {
+        sendState(transport, CliveState.SPEAKING);
+        await speak(transport, responseText, contextSegments);
+      } else {
+        transport.send(createMessage(MessageType.RESPONSE_AUDIO_END, {}));
+      }
       // Save Clive's response to context buffer
       addTurn(SPEAKER_CLIVE, responseText, null, { brevity: responseMetadata.brevity });
     }
@@ -352,6 +362,72 @@ async function handlePTTEnd(ws) {
     sendState(transport, CliveState.ERROR);
 
     // Return to idle after error
+    setTimeout(() => sendState(transport, CliveState.IDLE), 3000);
+  }
+}
+
+// ---- Text Input Flow ----
+
+async function handleTextInput(ws, payload) {
+  const text = (payload?.text || '').trim();
+  if (!text) return;
+
+  console.log(`[Host] Text input: "${text}"`);
+  const activeTurnId = beginTurn(ws);
+  const transport = createClientTransport();
+
+  hostRuntimeStatus.lastTranscript = text;
+  addTurn(SPEAKER_USER, text, null);
+  transport.send(createMessage(MessageType.TRANSCRIPT, { text }));
+
+  try {
+    const result = await executeTurn(transport, text);
+    if (isTurnCancelled(ws, activeTurnId)) {
+      sendState(transport, CliveState.IDLE);
+      return;
+    }
+
+    let responseText = result.text;
+
+    if (!result.success && FALLBACK_TO_LOCAL_LLM) {
+      responseText = await getResponse(text);
+    }
+
+    if (!responseText || responseText.trim().length === 0) {
+      responseText = "That didn't work. Want me to try again?";
+    }
+
+    hostRuntimeStatus.lastResponse = responseText;
+    const responseMetadata = shapeResponse(responseText, text);
+    const { spokenText, displayText, isLong } = splitResponse(responseText);
+    const contextSegments = getRecentTurns(5);
+
+    if (isLong) {
+      transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: spokenText }));
+      transport.send(createMessage('response_display', { text: displayText, summary: spokenText }));
+      if (hasAudioClients()) {
+        sendState(transport, CliveState.SPEAKING);
+        await speak(transport, spokenText, contextSegments);
+      } else {
+        transport.send(createMessage(MessageType.RESPONSE_AUDIO_END, {}));
+      }
+      addTurn(SPEAKER_CLIVE, spokenText, null, { brevity: responseMetadata.brevity });
+    } else {
+      transport.send(createMessage(MessageType.RESPONSE_TEXT, { text: responseText }));
+      if (hasAudioClients()) {
+        sendState(transport, CliveState.SPEAKING);
+        await speak(transport, responseText, contextSegments);
+      } else {
+        transport.send(createMessage(MessageType.RESPONSE_AUDIO_END, {}));
+      }
+      addTurn(SPEAKER_CLIVE, responseText, null, { brevity: responseMetadata.brevity });
+    }
+
+    sendState(transport, CliveState.IDLE);
+  } catch (e) {
+    console.error('[Host] Text input pipeline error:', e);
+    transport.send(createMessage(MessageType.ERROR, { error: 'Something went wrong. Try again?' }));
+    sendState(transport, CliveState.ERROR);
     setTimeout(() => sendState(transport, CliveState.IDLE), 3000);
   }
 }
@@ -405,6 +481,13 @@ function isTurnCancelled(ws, turnId) {
   return !!current && current.cancelledTurnId === turnId;
 }
 
+function hasAudioClients() {
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN && clientMeta.get(client)?.canReceiveAudio) return true;
+  }
+  return false;
+}
+
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -421,8 +504,8 @@ function splitResponse(text) {
 
   // Count list indicators: bullets, dashes, numbered items, markdown bold sections
   const listLines = lines.filter(l => /^\s*[-*•]\s|^\s*\d+[.)]\s|^\*\*/.test(l.trim()));
-  const hasLongList = listLines.length >= 4;
-  const isVeryLong = charCount > 500;
+  const hasLongList = listLines.length > 4;
+  const isVeryLong = charCount > 1000;
 
   if (!hasLongList && !isVeryLong) {
     return { spokenText: text, displayText: text, isLong: false };
